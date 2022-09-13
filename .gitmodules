@@ -1,0 +1,9 @@
+[submodule "src/commonml"]
+	path = src/vendor/commonml
+	url = git@git.isis.vanderbilt.edu:ahmedi/commonml.git
+[submodule "src/vendor/stable-baselines3"]
+	path = src/vendor/stable-baselines3
+	url = https://github.com/DLR-RM/stable-baselines3
+[submodule "src/vendor/multirotor"]
+	path = src/vendor/multirotor
+	url = git@git.isis.vanderbilt.edu:ahmedi/multirotor.git

@@ -1,0 +1,27 @@
+name: xfer
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - matplotlib
+  - jupyter
+  - jupyter_contrib_nbextensions
+  - tqdm
+  - scikit-learn
+  - pytorch::pytorch=1.12
+  - cudatoolkit=10.2
+  - control
+  - slycot
+  - numba
+  - optuna
+  - pip
+  - pip:
+    - gym
+    - tensorboard
+    - tensorboardX
+    - -e src/vendor/multirotor
+    - -e src/vendor/commonml
+    - -e src/vendor/stable-baselines3
+    - imitation
