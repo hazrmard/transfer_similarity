@@ -30,22 +30,22 @@ class XformedPolicy(ActorCriticPolicy):
     
     def __init__(
         self, *args, state_xform=None, action_xform=None, learnable=False,
-        unconstrained_actions=None, **kwargs):
+        constrained_actions=None, **kwargs):
         # Assign the variables. They will be conditionally converted to Parameters
         # in _build() so that the policy optimizer can pick them up.
         self.state_xform = state_xform
         self.action_xform = action_xform
         self.learnable_xform = learnable
         # if ==1, action space is the same
-        self.unconstrained_actions = unconstrained_actions
+        self.constrained_actions = constrained_actions
         super().__init__(*args, **kwargs)
     
     def _build(self, *args):
         if isinstance(self.action_space, gym.spaces.Box) and \
-                self.unconstrained_actions is not None:
+                self.constrained_actions is not None:
             self.action_space = deepcopy(self.action_space)
-            self.action_space.low *= self.unconstrained_actions
-            self.action_space.high *= self.unconstrained_actions
+            self.action_space.low *= self.constrained_actions
+            self.action_space.high *= self.constrained_actions
         dtype=torch.float
         if self.state_xform is None:
             self.state_xform = torch.zeros(self.action_space.shape[0],
@@ -166,19 +166,29 @@ class HParamCallback(BaseCallback):
     def _on_training_start(self) -> None:
         hparam_dict = {
             "algorithm": self.model.__class__.__name__,
-            "learning rate": self.model.learning_rate,
             "gamma": self.model.gamma,
             "batch_size": self.model.batch_size,
+            "n_steps": self.model.n_steps,
             "n_epochs": self.model.n_epochs,
             "learnable_xform": getattr(self.model.policy,
-                                       'learnable_xform', False)
+                                       'learnable_xform', False),
+            # max layer width of policy network
+            "pi_width": max(self.model.policy.net_arch[-1]['pi']),
+            "pi_depth": len(self.model.policy.net_arch[-1]['pi']),
+            "SDE": self.model.use_sde,
+            "SDE_freq": self.model.sde_sample_freq
         }
+        if callable(self.model.learning_rate):
+            hparam_dict["learning rate init"] = self.model.learning_rate(1)
+            hparam_dict["learning rate final"] = self.model.learning_rate(0)
+        else:
+            hparam_dict["learning rate"] = self.model.learning_rate
+
         # define the metrics that will appear in the `HPARAMS`
         # Tensorboard tab by referencing their tag
         # Tensorbaord will find & display metrics from the `SCALARS` tab
         metric_dict = {
             "rollout/ep_rew_mean": 0,
-            "train/explained_variance": 0,
         }
         self.logger.record(
             "hparams",
@@ -200,13 +210,21 @@ def learn_rl(
     kwargs['n_steps'] = kwargs.get('n_steps', getattr(env, 'period', 2048))
     kwargs['policy_kwargs'] = kwargs.get('policy_kwargs', {})
     kwargs['policy_kwargs']['learnable'] = learnable_transformation
-    kwargs['policy_kwargs']['learnable'] = constrained_actions
+    kwargs['policy_kwargs']['constrained_actions'] = constrained_actions
     # if transformation is learnable, then the attributes are Parameters,
     # otherwise they are tensors
+
+    if tensorboard_log is not None:
+        logpath = tensorboard_log.split('/')
+        if len(logpath) > 1:
+            logdir = './tensorboard/' + '/' + '/'.join(logpath[:-1])
+        else:
+            logdir = './tensorboard/'
+        logname = logpath[-1]
+
     
     model = PPO(XformedPolicy, env, verbose=verbose,
-                tensorboard_log=None if tensorboard_log is None else \
-                './tensorboard/' + env.__class__.__name__,
+                tensorboard_log=None if tensorboard_log is None else logdir,
                 learning_rate=learning_rate,
                 seed=seed, **kwargs)
     if reuse_parameters_of is not None:
@@ -240,7 +258,7 @@ def learn_rl(
         # The transform function has already created & assigned values to the
         # *xform tensors in model.policy
         model.policy.load_state_dict(params)
-    model.learn(total_timesteps=steps, tb_log_name=tensorboard_log,
+    model.learn(total_timesteps=steps, tb_log_name=logname,
                 callback=HParamCallback())
     return model
 

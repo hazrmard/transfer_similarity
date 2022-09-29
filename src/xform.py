@@ -79,7 +79,7 @@ def get_env_samples(env, n, control_law):
     if isinstance(control_law, np.ndarray):
         policy = lambda x: -control_law @ x
     else:
-        policy = lambda x: control_law.predict(x)[0]
+        policy = lambda x: control_law.predict(x, deterministic=True)[0]
     xu, x = [], []
     for e in range(n):
         state = env.reset()

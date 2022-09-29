@@ -15,9 +15,17 @@ class SystemEnv(gym.Env):
         self.q = np.atleast_2d(q)
         self.dt = dt
         self.x = None
-        self.dxdt = None
-        self.n = None
+        self.dxdt = 0
+        self.n = 0
         self.random = np.random.RandomState(seed)
+
+
+    @property
+    def state(self) -> np.ndarray:
+        return self.x
+    @state.setter
+    def state(self, x: np.ndarray):
+        self.x = np.asarray(x, dtype=self.dtype)
 
 
     def reset(self, x=None):
@@ -40,4 +48,5 @@ class SystemEnv(gym.Env):
         self.x = (x + 0.5 * (self.dxdt + dxdt) * self.dt).astype(self.dtype)
         self.dxdt = dxdt
         self.n += 1
-        return self.x, self.reward(x, u, self.x), False, {'u': u}
+        r = self.reward(x, u, self.x)
+        return self.x, r, False, {'u': u}
