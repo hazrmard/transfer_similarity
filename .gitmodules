@@ -7,3 +7,6 @@
 [submodule "src/vendor/multirotor"]
 	path = src/vendor/multirotor
 	url = git@git.isis.vanderbilt.edu:ahmedi/multirotor.git
+[submodule "src/vendor/mpc.pytorch"]
+	path = src/vendor/mpc.pytorch
+	url = git@github.com:hazrmard/mpc.pytorch.git
