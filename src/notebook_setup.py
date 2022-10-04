@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 
 # Default plotting style
-plt.rc('lines', lw=1)
+plt.rc('lines', lw=2)
 
 SMALL_SIZE = 12
 MEDIUM_SIZE = 12

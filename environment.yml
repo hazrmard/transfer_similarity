@@ -24,4 +24,5 @@ dependencies:
     - -e src/vendor/multirotor
     - -e src/vendor/commonml
     - -e src/vendor/stable-baselines3
+    - -e src/vendor/mpc.pytorch
     - imitation

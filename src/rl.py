@@ -1,6 +1,7 @@
 from copy import deepcopy
 from typing import Callable
 import types
+import time
 
 import numpy as np
 import gym
@@ -324,3 +325,12 @@ def replace_instance_fn(instance, fn_name: str, replace_with: Callable):
     new_fn = types.MethodType(replace_with, instance)
     setattr(instance, fn_name, new_fn)
     return instance
+
+
+
+def evaluate_rl(agent: PPO, env: gym.Env, n_eval_episodes=50):
+    start = time.time()
+    res = evaluate_policy(agent, env, n_eval_episodes=n_eval_episodes)
+    end = time.time()
+    runtime = (end - start) / n_eval_episodes
+    return *res, runtime

@@ -6,7 +6,7 @@ class SystemEnv(gym.Env):
 
 
     def __init__(
-        self, system, q=1, dt=1e-2, seed=None, constrained_actions=True,
+        self, system, q=1, dt=1e-2, seed=None, constrained_actions=None,
         dtype=np.float32
     ):
         super().__init__()
@@ -38,15 +38,20 @@ class SystemEnv(gym.Env):
 
 
     def reward(self, xold, u, x):
+        # squeeze in case x has a batch dimension [1, x] (while using torch.mpc)
+        x = np.atleast_1d(x.squeeze())
         return -(x.T @ self.q @ x).item()
 
 
-    def step(self, u: np.ndarray):
+    def step(self, u: np.ndarray, from_x: np.ndarray=None, persist=True):
         u = np.asarray(u, dtype=self.dtype)
-        dxdt = self.system.dynamics(None, self.x, u)
-        x = self.x
-        self.x = (x + 0.5 * (self.dxdt + dxdt) * self.dt).astype(self.dtype)
-        self.dxdt = dxdt
-        self.n += 1
-        r = self.reward(x, u, self.x)
-        return self.x, r, False, {'u': u}
+        old_dxdt = self.dxdt
+        old_x = np.asarray(self.x if from_x is None else from_x, dtype=self.dtype)
+        new_dxdt = self.system.dynamics(None, old_x, u)
+        new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * self.dt).astype(self.dtype)
+        r = self.reward(old_x, u, new_x)
+        if persist:
+            self.n += 1
+            self.x = new_x
+            self.dxdt = new_dxdt
+        return new_x, r, False, {'u': u, 'dxdt': new_dxdt}

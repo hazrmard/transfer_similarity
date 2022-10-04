@@ -11,6 +11,7 @@ def plot_env_response(
     env: SystemEnv, x0: np.ndarray, control_law: Union[Callable, np.ndarray], ax=None,
     state_idx=None, action_idx=None,
     state_names=None, action_names=None,
+    legend: bool=True,
     clip_actions: bool=True
 ):
     if ax is not None:
@@ -59,7 +60,8 @@ def plot_env_response(
         plt.plot(t, u[ui], label=label, ls=':')
     lines2 = plt.gca().lines
     plt.ylabel('action')
-    plt.legend(handles=lines1+lines2)
+    if legend:
+        plt.legend(handles=lines1+lines2)
 
 
 
