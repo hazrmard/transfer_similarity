@@ -7,6 +7,8 @@ from tqdm.autonotebook import trange
 from systems.base import SystemEnv
 from mpc.mpc import GradMethods, QuadCost, MPC
 
+# TODO: MPCAgent class with a predict() method like RL Agent
+
 
 
 def get_dynamics_func(env: SystemEnv) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
@@ -28,7 +30,7 @@ def get_dynamics_func(env: SystemEnv) -> Callable[[np.ndarray, np.ndarray], np.n
 
     """
     def F(x, u):
-        x_new, _, _, info = env.step(u.data, from_x=x.data, persist=False)
+        x_new, _, _, _, info = env.step(u.data, from_x=x.data, persist=False)
         env.dxdt = info['dxdt']
         return torch.tensor(x_new)
     return F
@@ -121,7 +123,7 @@ def learn_mpc(
             action = action.detach().numpy()
             if not (state_xform is None or action_xform is None):
                 action = state_xform @ states[-1] + action_xform @ action
-            state, r, done, _ = env.step(action)
+            state, r, done, _, _ = env.step(action)
             actions.append(action)
             states.append(state)
             reward += r

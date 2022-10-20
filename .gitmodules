@@ -10,3 +10,6 @@
 [submodule "src/vendor/mpc.pytorch"]
 	path = src/vendor/mpc.pytorch
 	url = git@github.com:hazrmard/mpc.pytorch.git
+[submodule "src/vendor/py-scurve"]
+	path = src/vendor/py-scurve
+	url = git@github.com:nameofuser1/py-scurve.git

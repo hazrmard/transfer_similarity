@@ -23,7 +23,7 @@ from stable_baselines3.common.distributions import (
 )
 
 
-__all__ = ['XformedPolicy', 'evaluate_policy', 'learn_rl', 'transform_rl_policy']
+__all__ = ['XformedPolicy', 'evaluate_policy', 'learn_rl', 'evaluate_rl', 'transform_rl_policy']
 
 
 
@@ -205,7 +205,8 @@ class HParamCallback(BaseCallback):
 def learn_rl(
     env, steps=50_000, tensorboard_log=None, learning_rate=1e-3, verbose=0,
     seed=None, reuse_parameters_of=None, learnable_transformation=False,
-    constrained_actions=None, **kwargs
+    constrained_actions=None, reset_num_timesteps=True, reuse_logger=False,
+    **kwargs
 ):
     # process arguments
     kwargs['n_steps'] = kwargs.get('n_steps', getattr(env, 'period', 2048))
@@ -229,6 +230,11 @@ def learn_rl(
                 learning_rate=learning_rate,
                 seed=seed, **kwargs)
     if reuse_parameters_of is not None:
+        # TODO reuse logger in tensorboard
+        if reuse_logger==True:
+            model.set_logger(reuse_parameters_of.logger)
+            # so logger can log at correct step number
+            model.num_timesteps = reuse_parameters_of.num_timesteps
         params = reuse_parameters_of.policy.state_dict()
         # if reused policy already has been transformed with
         # learnable transform parameters, then
@@ -260,7 +266,7 @@ def learn_rl(
         # *xform tensors in model.policy
         model.policy.load_state_dict(params)
     model.learn(total_timesteps=steps, tb_log_name=logname,
-                callback=HParamCallback())
+                callback=HParamCallback(), reset_num_timesteps=reset_num_timesteps)
     return model
 
 

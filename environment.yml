@@ -18,7 +18,7 @@ dependencies:
   - optuna
   - pip
   - pip:
-    - gym
+    - gym[box2d]
     - tensorboard
     - tensorboardX
     - -e src/vendor/multirotor
