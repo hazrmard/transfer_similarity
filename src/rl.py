@@ -219,7 +219,7 @@ def learn_rl(
     if tensorboard_log is not None:
         logpath = tensorboard_log.split('/')
         if len(logpath) > 1:
-            logdir = './tensorboard/' + '/' + '/'.join(logpath[:-1])
+            logdir = './tensorboard/' + '/'.join(logpath[:-1])
         else:
             logdir = './tensorboard/'
         logname = logpath[-1]

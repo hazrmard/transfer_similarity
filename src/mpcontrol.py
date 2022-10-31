@@ -9,6 +9,21 @@ from mpc.mpc import GradMethods, QuadCost, MPC
 
 # TODO: MPCAgent class with a predict() method like RL Agent
 
+class MPCAgent:
+
+
+    def __init__(self, env):
+        self.env = env
+
+
+    def learn(self, env: SystemEnv=None, q=None, r=None, x0=None):
+        pass
+
+
+    def predict(self, *args, **kwargs) -> Tuple[np.ndarray, float]:
+        pass
+
+
 
 
 def get_dynamics_func(env: SystemEnv) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:

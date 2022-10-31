@@ -1,4 +1,9 @@
 import matplotlib.pyplot as plt
+import numpy as np
+
+# https://stackoverflow.com/a/21009774/4591810
+float_formatter = "{:.2f}".format
+np.set_printoptions(formatter={'float_kind':float_formatter})
 
 # Default plotting style
 plt.rc('lines', lw=2)

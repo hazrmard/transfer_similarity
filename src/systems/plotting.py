@@ -12,7 +12,8 @@ def plot_env_response(
     state_idx=None, action_idx=None,
     state_names=None, action_names=None,
     legend: bool=True,
-    clip_actions: bool=True
+    clip_actions: bool=True,
+    max_steps: int=np.inf
 ):
     if ax is not None:
         plt.sca(ax)
@@ -30,12 +31,14 @@ def plot_env_response(
         policy = lambda x: -control_law @ x
     else:
         policy = lambda x: control_law.predict(x, deterministic=True)[0]
-    while not done:
+    i = 0
+    while not done and i < max_steps:
+        i += 1
         action = policy(state)
         if clip_actions:
             action = np.clip(action, a_min=env.action_space.low, a_max=env.action_space.high)
         x.append(state)
-        state, reward, done, info = env.step(action)
+        state, reward, done, *_, info = env.step(action)
         u.append(info.get('u', action))
         r.append(reward)
         if done: break

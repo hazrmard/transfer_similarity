@@ -43,6 +43,15 @@ def ab_xform_from_pseudo_matrix(P_s: np.ndarray, P_t: np.ndarray, dt: float=1e-2
 
 
 
+def pseudo_matrix_from_data(
+    xu, x, mode='xu-x'
+) -> np.ndarray:
+    if mode=='xu-x':
+        P = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+    return P
+
+
+
 
 def basis_vectors(mat):
     # https://stackoverflow.com/a/42868363/4591810

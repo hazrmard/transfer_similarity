@@ -6,13 +6,17 @@ from typing import Union
 
 import numpy as np
 import control
+import gym
 
 from .matrices import ab_xform_from_pseudo_matrix
 
 
 
 def policy_transform(sys: control.LinearIOSystem, xformA=None, xformB=None, ctrl_law=None):
-    A, B, K = sys.A, sys.B, ctrl_law
+    if not isinstance(sys, control.LinearIOSystem):
+        A, B = sys
+    else:
+        A, B = sys.A, sys.B
     F_A = np.eye(len(A)) if xformA is None else xformA
     F_B = np.eye(len(A)) if xformB is None else xformB
     I = np.eye(len(A))
@@ -47,8 +51,20 @@ def pseudo_matrix(sys: control.LinearIOSystem, dt=1e-2):
 
 
 
+def pseudo_matrix_from_data(
+    env: gym.Env, n, control_law=None, n_episodes_or_steps='episodes'
+) -> np.ndarray:
+    xu, x = get_env_samples(
+        env=env, control_law=control_law,
+        n=n, n_episodes_or_steps=n_episodes_or_steps
+    )
+    P = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+    return P
+
+
+
 def get_env_samples(
-    env, n, control_law=None, n_episodes_or_steps='episodes'
+    env: gym.Env, n, control_law=None, n_episodes_or_steps='episodes'
 ):
     if isinstance(control_law, np.ndarray):
         policy = lambda x: -control_law @ x
@@ -59,11 +75,15 @@ def get_env_samples(
     xu, x = [], []
     i = 0
     while i < n:
-        state = env.reset()[0]
+        state = env.reset()
+        if len(state)==2 and isinstance(state[1], dict):
+            # conforming to the new gym spec, where reset returns a dict
+            # as the second value
+            state = state[0]
         done = False
         while not done and i < n:
             action = policy(state)
-            nstate, _, done, _, info = env.step(action)
+            nstate, _, done, *_, info = env.step(action)
             if n_episodes_or_steps == 'steps':
                 i += 1
             xu.append(np.concatenate((state, info.get('u', action))))
@@ -75,6 +95,14 @@ def get_env_samples(
                 break
     return (np.asarray(xu, dtype=np.float32).T,
            np.asarray(x, dtype=np.float32).T)
+
+
+
+def transform_linear_system(sys: control.LinearIOSystem, xformA, xformB) -> control.LinearIOSystem:
+    sys = sys.copy(name=sys.name)
+    sys.A = xformA @ sys.A
+    sys.B = xformB @ sys.B
+    return sys
 
 
 
