@@ -54,9 +54,11 @@ SP = SimulationParams(dt=0.001, g=9.81)
 
 
 
-def get_controller(m: Multirotor):
+def get_controller(m: Multirotor, max_velocity=7., max_acceleration=3., interval=None):
     pos = PosController(
-        1.0, 0., 0., 1., m.simulation.dt, vehicle=m)
+        1.0, 0., 0., 1., m.simulation.dt, vehicle=m,
+        max_velocity=max_velocity, max_acceleration=max_acceleration    
+    )
     vel = VelController(
         2.0, 1.0, 0.5, 1000., m.simulation.dt, vehicle=m)
     att = AttController(
@@ -75,7 +77,7 @@ def get_controller(m: Multirotor):
         5, 0, 0,
         1, m.simulation.dt, vehicle=m)
     ctrl = Controller(
-        pos, vel, att, rat, alt, alt_rate
+        pos, vel, att, rat, alt, alt_rate, interval=interval
     )
     return ctrl
 
@@ -215,7 +217,7 @@ class MultirotorEnv(SystemEnv):
         elif self.clip:
             # action is already as dynamics space, clip to max torque
             u = np.clip(u, a_min=self._min_dyn, a_max=self._max_dyn)
-        x, r, d, _, i = super().step(u)
+        x, r, d, *_, i = super().step(u)
         self.state_buffer.append(x)
         # since SystemEnv is only using Multirotor.dxdt methods, the mult
         # object is not integrating the change in state. Therefore manually
@@ -289,7 +291,7 @@ class ControlledMultirotorEnv(MultirotorEnv):
         dynamics = self.ctrl.step(u, ref_is_error=True)
         # action is already in dynamics space, but needs to be clipped to the
         # environment's max torque/thrust bounds
-        x, r, d, _, i = super().step(dynamics, unnormalize=False, clip=True)
+        x, r, d, *_, i = super().step(dynamics, unnormalize=False, clip=True)
         return self.state, r, d, False, {'u': u}
 
 
