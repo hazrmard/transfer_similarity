@@ -18,7 +18,7 @@ dependencies:
   - optuna
   - pip
   - pip:
-    - gym[box2d]
+    - gym[box2d]==0.21 # breaking changes in API for later versions (for StableBaselines)
     - tensorboard
     - tensorboardX
     - -e src/vendor/multirotor

@@ -24,6 +24,9 @@ class SystemEnv(gym.Env):
 
 
     @property
+    def name(self) -> str:
+        return self.__class__.__name__
+    @property
     def state(self) -> np.ndarray:
         return self.x
     @state.setter
@@ -37,7 +40,7 @@ class SystemEnv(gym.Env):
                  ).astype(self.dtype)
         self.n = 0
         self.dxdt = 0
-        return self.x, {}
+        return self.x
 
 
     def reward(self, xold, u, x):
@@ -56,12 +59,12 @@ class SystemEnv(gym.Env):
             try:
                 new_dxdt = self.system.dynamics(None, old_x, u)
                 new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * self.dt).astype(self.dtype)
-            except RuntimeWarning:
-                print('x', old_x, 'u', u, 'dxdt', new_dxdt)
+            except (RuntimeWarning, TypeError):
+                print('x', old_x, 'u', u, 'old_dxdt', new_dxdt, 'old_dxdt', new_dxdt)
                 return
         r = self.reward(old_x, u, new_x)
         if persist:
             self.n += 1
             self.x = new_x
             self.dxdt = new_dxdt
-        return new_x, r, False, False, {'u': u, 'dxdt': new_dxdt}
+        return new_x, r, False, {'u': u, 'dxdt': new_dxdt}

@@ -38,7 +38,7 @@ class SimpleEnv(SystemEnv):
              1/(2*np.abs(self.a)),
              size=(1,)
             )).astype(np.float32)
-        return self.x, {}
+        return self.x
     def step(self, u: np.ndarray, from_x=None, persist=True):
-        x, r, d, _, i = super().step(u, from_x=from_x, persist=persist)
-        return x, r, self.n > self.period, False, i
+        x, r, d, *_, i = super().step(u, from_x=from_x, persist=persist)
+        return x, r, self.n > self.period, *_, i

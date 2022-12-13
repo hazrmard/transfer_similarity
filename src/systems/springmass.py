@@ -49,7 +49,7 @@ class SpringMassEnv(SystemEnv):
         self.x = (np.asarray(x) if x is not None else \
                  self.random.uniform([-1, -0.1], [1, 0.1])
                  ).astype(np.float32)
-        return self.x, {}
+        return self.x
     def step(self, u: np.ndarray, from_x=None, persist=True):
-        x, r, d, _, i = super().step(u, from_x=from_x, persist=persist)
-        return x, r, self.n > self.period, False, i
+        x, r, d, *_, i = super().step(u, from_x=from_x, persist=persist)
+        return x, r, self.n > self.period, *_, i

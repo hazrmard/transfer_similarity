@@ -63,9 +63,9 @@ class PendulumEnv(SystemEnv):
         self.x = (np.asarray(x) if x is not None else \
                  self.random.uniform([-np.pi/6, -0.05], [np.pi/6, 0.05])
                  ).astype(np.float32)
-        return self.x, {}
+        return self.x
     def step(self, u: np.ndarray, from_x=None, persist=True):
-        x, r, d, _, i = super().step(u, from_x=from_x, persist=persist)
+        x, r, d, *_, i = super().step(u, from_x=from_x, persist=persist)
         if x.ndim==1:
             x[0] = np.sign(x[0]) * (np.abs(x[0]) % (2 * np.pi))
             if persist:
@@ -75,4 +75,4 @@ class PendulumEnv(SystemEnv):
             x[0,0] = np.sign(x[0,0]) * (np.abs(x[0,0]) % (2 * np.pi))
             if persist:
                 self.x[0,0] = x[0,0]
-        return x, r, self.n > self.period, False, i
+        return x, r, self.n > self.period, *_, i

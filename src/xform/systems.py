@@ -2,7 +2,8 @@
 Operations primarily on systems and environments.
 """
 
-from typing import Union
+from typing import Union, Tuple
+from types import SimpleNamespace
 
 import numpy as np
 import control
@@ -12,7 +13,10 @@ from .matrices import ab_xform_from_pseudo_matrix
 
 
 
-def policy_transform(sys: control.LinearIOSystem, xformA=None, xformB=None, ctrl_law=None):
+def policy_transform(
+    sys: Union[control.LinearIOSystem, Tuple[np.ndarray, np.ndarray]],
+    xformA=None, xformB=None, ctrl_law=None
+) -> Tuple[np.ndarray, np.ndarray]:
     if not isinstance(sys, control.LinearIOSystem):
         A, B = sys
     else:
@@ -109,6 +113,7 @@ def transform_linear_system(sys: control.LinearIOSystem, xformA, xformB) -> cont
 def get_transforms(
     agent, env, env_,
     buffer_episodes=5,
+    n_episodes_or_steps='episodes',
     xformA=None, xformB=None,
     data_driven_source=True,
     x0=None, u0=None,
@@ -129,12 +134,12 @@ def get_transforms(
         data_driven_source = True
     # get the pseudo matrix representing source system dynamics
     if data_driven_source:
-        xu, x = get_env_samples(env, buffer_episodes, agent)
+        xu, x = get_env_samples(env, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
         P_s = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
     else:
         P_s = pseudo_matrix(_sys_linear, env.dt)
     # get pseudo matrix representing target system dynamics
-    xu, x = get_env_samples(env_, buffer_episodes, agent)
+    xu, x = get_env_samples(env_, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
     P_t = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
     # get the relationship between source and target systems
     A_s, B_s, A_t, B_t, F_A, F_B = ab_xform_from_pseudo_matrix(P_s, P_t, env.dt)
@@ -150,7 +155,11 @@ def get_transforms(
     else:
         source_system = _sys_linear
     state_xform, action_xform = policy_transform(source_system, F_A, F_B)
-    return state_xform, action_xform, F_A, F_B
+    ns = SimpleNamespace()
+    ns.x = x.T # convert column vectors to row vectors
+    ns.A_s, ns.B_s = A_s, B_s
+    ns.F_A, ns.F_B = F_A, F_B
+    return state_xform, action_xform, ns
 
 
 

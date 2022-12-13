@@ -69,11 +69,11 @@ class CartpoleEnv(SystemEnv):
         self.x = (np.asarray(x) if x is not None else \
                  self.random.uniform(-0.05, 0.05, size=4)
                  ).astype(np.float32)
-        return self.x, {}
+        return self.x
     def reward(self, xold, u, x):
         return 1.
     def step(self, u: np.ndarray, from_x=None, persist=True):
-        x, r, d, _, i = super().step(u, from_x=from_x, persist=persist)
+        x, r, d, *_, i = super().step(u, from_x=from_x, persist=persist)
         if x.ndim==1:
             x[0] = np.sign(x[0]) * (np.abs(x[0]) % (2 * np.pi))
             if persist:
@@ -87,4 +87,4 @@ class CartpoleEnv(SystemEnv):
             done = (np.abs(x[0,0]) > 0.2095) or \
                    (self.n >= 500) or \
                    (np.abs(x[0,2]) > 2.4)
-        return x, r, done, False, i
+        return x, r, done, *_, i

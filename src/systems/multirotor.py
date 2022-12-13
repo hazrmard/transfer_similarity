@@ -54,7 +54,8 @@ SP = SimulationParams(dt=0.001, g=9.81)
 
 
 
-def get_controller(m: Multirotor, max_velocity=7., max_acceleration=3., interval=None):
+def get_controller(m: Multirotor, max_velocity=7., max_acceleration=3.):
+    assert m.simulation.dt <= 0.1, 'Simulation time step too large.'
     pos = PosController(
         1.0, 0., 0., 1., m.simulation.dt, vehicle=m,
         max_velocity=max_velocity, max_acceleration=max_acceleration    
@@ -77,7 +78,8 @@ def get_controller(m: Multirotor, max_velocity=7., max_acceleration=3., interval
         5, 0, 0,
         1, m.simulation.dt, vehicle=m)
     ctrl = Controller(
-        pos, vel, att, rat, alt, alt_rate, interval=interval
+        pos, vel, att, rat, alt, alt_rate,
+        interval_p=0.1, interval_a=0.01, interval_z=0.1
     )
     return ctrl
 
@@ -204,7 +206,7 @@ class MultirotorEnv(SystemEnv):
                                 dtype=self.dtype)
         # fill state buffer with current state, ejecting last states
         self.state = self.x
-        return self.x, {}
+        return self.x
 
 
     def step(self, u: np.ndarray):
@@ -225,7 +227,7 @@ class MultirotorEnv(SystemEnv):
         # that SystemEnv.step() does
         self.mult.state = x
         done = (self.n >= self.period)
-        return x, r, done, False, i
+        return x, r, done, *_, i
 
 
 

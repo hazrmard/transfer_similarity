@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Callable
+from typing import Callable, Tuple
 import types
 import time
 
@@ -7,6 +7,7 @@ import numpy as np
 import gym
 import torch
 import torch.nn as nn
+from torch.autograd.functional import jacobian
 from stable_baselines3 import PPO
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -153,6 +154,34 @@ class XformedPolicy(ActorCriticPolicy):
                        (self.action_xform @ mean_action.transpose(1, 0))).transpose(1, 0)
         return self._get_action_dist_from_mean(mean_action, latent_pi=latent_pi)
 
+    def dvdpi_dobs(self, obs: torch.Tensor, deterministic=False) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.tensor(obs).float()
+        obs = torch.atleast_2d(obs)
+        obs.requires_grad_(True)
+        # action, value, _ = self.forward(obs, deterministic=deterministic)
+        # vgrad = dtensor_dx(value, obs)
+        # agrad = dtensor_dx(action, obs)
+        # https://discuss.pytorch.org/t/what-do-the-dimensions-of-the-output-of-torch-autograd-functional-jacobian-represent/144492
+        vgrad = jacobian(self.v_x, obs)
+        vgrad = torch.einsum("bibj->bij", vgrad)
+        ugrad = jacobian(self.u_x, obs)
+        ugrad = torch.einsum("bibj->bij", ugrad)
+        return vgrad, ugrad
+
+    def v_x(self, x):
+        return self.forward(x, deterministic=True)[1]
+    def u_x(self, x):
+        return self.forward(x, deterministic=True)[0]
+
+
+
+def dtensor_dx(tensor: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    assert x.requires_grad, 'input gradient tracking is off'
+    dtensor_dtensor = torch.ones_like(tensor)
+    g = torch.autograd.grad(tensor, x, grad_outputs=dtensor_dtensor, retain_graph=True)[0]
+    return g
+
 
 
 # From: https://stable-baselines3.readthedocs.io/en/master/guide/tensorboard.html#logging-hyperparameters
@@ -216,6 +245,7 @@ def learn_rl(
     # if transformation is learnable, then the attributes are Parameters,
     # otherwise they are tensors
 
+    logname = None
     if tensorboard_log is not None:
         logpath = tensorboard_log.split('/')
         if len(logpath) > 1:
@@ -248,7 +278,8 @@ def learn_rl(
         if state_xform is not None and action_xform is not None:
             model = transform_rl_policy(
                 model, state_xform, action_xform,
-                learnable=learnable_transformation
+                learnable=learnable_transformation,
+                copy=False
             )
             # if not learnable, ensure xforms are not in params dict
             # since the static tensors have been assigned as attributes
@@ -266,7 +297,8 @@ def learn_rl(
         # *xform tensors in model.policy
         model.policy.load_state_dict(params)
     model.learn(total_timesteps=steps, tb_log_name=logname,
-                callback=HParamCallback(), reset_num_timesteps=reset_num_timesteps)
+                callback=HParamCallback(), reset_num_timesteps=reset_num_timesteps,
+                progress_bar=True)
     return model
 
 
