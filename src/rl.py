@@ -25,6 +25,7 @@ from stable_baselines3.common.distributions import (
 
 
 __all__ = ['XformedPolicy', 'evaluate_policy', 'learn_rl', 'evaluate_rl', 'transform_rl_policy']
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 
@@ -156,7 +157,7 @@ class XformedPolicy(ActorCriticPolicy):
 
     def dvdpi_dobs(self, obs: torch.Tensor, deterministic=False) -> Tuple[torch.Tensor, torch.Tensor]:
         if not isinstance(obs, torch.Tensor):
-            obs = torch.tensor(obs).float()
+            obs = torch.tensor(obs).float().to(self.device)
         obs = torch.atleast_2d(obs)
         obs.requires_grad_(True)
         # action, value, _ = self.forward(obs, deterministic=deterministic)
@@ -167,7 +168,7 @@ class XformedPolicy(ActorCriticPolicy):
         vgrad = torch.einsum("bibj->bij", vgrad)
         ugrad = jacobian(self.u_x, obs)
         ugrad = torch.einsum("bibj->bij", ugrad)
-        return vgrad, ugrad
+        return vgrad.cpu(), ugrad.cpu()
 
     def v_x(self, x):
         return self.forward(x, deterministic=True)[1]
@@ -259,6 +260,10 @@ def learn_rl(
                 tensorboard_log=None if tensorboard_log is None else logdir,
                 learning_rate=learning_rate,
                 seed=seed, **kwargs)
+    if not learnable_transformation:
+        device = next(model.policy.parameters()).device
+        model.policy.state_xform = model.policy.state_xform.to(device)
+        model.policy.action_xform = model.policy.action_xform.to(device)
     if reuse_parameters_of is not None:
         # TODO reuse logger in tensorboard
         if reuse_logger==True:
@@ -296,6 +301,8 @@ def learn_rl(
         # The transform function has already created & assigned values to the
         # *xform tensors in model.policy
         model.policy.load_state_dict(params)
+    # print('HERE')
+    # print(model.policy.state_xform.device, next(model.policy.parameters()).device)
     model.learn(total_timesteps=steps, tb_log_name=logname,
                 callback=HParamCallback(), reset_num_timesteps=reset_num_timesteps,
                 progress_bar=True)
@@ -316,15 +323,16 @@ def transform_rl_policy(
         if logger is not None:
             agent.__dict__[ '_logger'] = logger
     dtype = next(agent.policy.parameters()).dtype
+    device = next(agent.policy.parameters()).device
     for xform, name in zip((state_xform, action_xform),
                            ('state_xform', 'action_xform')):
         # ensure that provided xform is a tensor
         if isinstance(xform, np.ndarray):
-            t = torch.from_numpy(xform).to(dtype)
+            t = torch.from_numpy(xform).to(dtype=dtype, device=device)
         elif isinstance(xform, nn.Parameter):
             t = xform.data.clone().detach()
         elif isinstance(xform, torch.Tensor):
-            t = xform.to(dtype)
+            t = xform.to(dtype=dtype, device=device)
 
         # check if xform is already a tensor/parameter
         # attribute on the policy
