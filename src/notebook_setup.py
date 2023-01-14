@@ -6,7 +6,8 @@ float_formatter = "{:.2f}".format
 np.set_printoptions(formatter={'float_kind':float_formatter})
 
 # Default plotting style
-plt.rc('lines', lw=2)
+LW = 2
+plt.rc('lines', lw=LW)
 
 SMALL_SIZE = 12
 MEDIUM_SIZE = 12

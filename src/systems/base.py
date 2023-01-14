@@ -8,7 +8,7 @@ class SystemEnv(gym.Env):
 
 
     def __init__(
-        self, system, q=1, r=0, dt=1e-2, seed=None, constrained_actions=None,
+        self, system: control.LinearIOSystem, q=1, r=0, dt=1e-2, seed=None, constrained_actions=None,
         dtype=np.float32
     ):
         super().__init__()
@@ -54,14 +54,8 @@ class SystemEnv(gym.Env):
         u = np.asarray(u, dtype=self.dtype)
         old_dxdt = self.dxdt
         old_x = np.asarray(self.x if from_x is None else from_x, dtype=self.dtype)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            try:
-                new_dxdt = self.system.dynamics(None, old_x, u)
-                new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * self.dt).astype(self.dtype)
-            except (RuntimeWarning, TypeError):
-                print('x', old_x, 'u', u, 'old_dxdt', new_dxdt, 'old_dxdt', new_dxdt)
-                return
+        new_dxdt = self.system.dynamics(None, old_x, u)
+        new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * self.dt).astype(self.dtype)
         r = self.reward(old_x, u, new_x)
         if persist:
             self.n += 1

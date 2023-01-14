@@ -29,6 +29,10 @@ def plot_env_response(
     done = False
     if isinstance(control_law, np.ndarray):
         policy = lambda x: -control_law @ x
+    elif control_law is None:
+        policy= lambda x: env.action_space.sample()
+    elif control_law == 0:
+        policy= lambda x: env.action_space.sample() * 0
     else:
         policy = lambda x: control_law.predict(x, deterministic=True)[0]
     i = 0
