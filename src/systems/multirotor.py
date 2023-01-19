@@ -54,29 +54,32 @@ SP = SimulationParams(dt=0.001, g=9.81)
 
 
 
-def get_controller(m: Multirotor, max_velocity=7., max_acceleration=3.):
+def get_controller(m: Multirotor, max_velocity=5., max_acceleration=3.):
     assert m.simulation.dt <= 0.1, 'Simulation time step too large.'
     pos = PosController(
-        1.0, 0., 0., 1., m.simulation.dt, vehicle=m,
+        1.0, 0., 0., 1., vehicle=m,
         max_velocity=max_velocity, max_acceleration=max_acceleration    
     )
     vel = VelController(
-        2.0, 1.0, 0.5, 1000., m.simulation.dt, vehicle=m)
+        2.0, 1.0, 0.5, 1000., vehicle=m)
     att = AttController(
         [2.6875, 4.5, 4.5],
         0, 0.,
-        1., m.simulation.dt, vehicle=m)
+        1., vehicle=m)
     rat = RateController(
-        [0.1655, 0.1655, 0.5],
-        [0.135, 0.135, 0.018],
-        [0.01234, 0.01234, 0.],
-        [0.5,0.5,0.5], m.simulation.dt, vehicle=m)
+        [4., 4., 4.],
+        0, 0, # purely P control
+        # [0.1655, 0.1655, 0.5],
+        # [0.135, 0.135, 0.018],
+        # [0.01234, 0.01234, 0.],
+        [0.5,0.5,0.5],
+        vehicle=m)
     alt = AltController(
         1, 0, 0,
-        1, m.simulation.dt, vehicle=m)
+        1, vehicle=m)
     alt_rate = AltRateController(
         5, 0, 0,
-        1, m.simulation.dt, vehicle=m)
+        1, vehicle=m)
     ctrl = Controller(
         pos, vel, att, rat, alt, alt_rate,
         interval_p=0.1, interval_a=0.01, interval_z=0.1

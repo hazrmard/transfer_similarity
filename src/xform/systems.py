@@ -15,19 +15,27 @@ from .matrices import ab_xform_from_pseudo_matrix
 
 def policy_transform(
     sys: Union[control.LinearIOSystem, Tuple[np.ndarray, np.ndarray]],
-    xformA=None, xformB=None, ctrl_law=None
+    xformA=None, xformB=None, ctrl_law=None,
+    A_t=None, B_t=None
 ) -> Tuple[np.ndarray, np.ndarray]:
     if not isinstance(sys, control.LinearIOSystem):
-        A, B = sys
+        A_s, B_s = sys
     else:
-        A, B = sys.A, sys.B
-    F_A = np.eye(len(A)) if xformA is None else xformA
-    F_B = np.eye(len(A)) if xformB is None else xformB
-    I = np.eye(len(A))
-    F_B_B_ = np.linalg.pinv(F_B @ B)
+        A_s, B_s = sys.A, sys.B
+    F_A = np.eye(len(A_s)) if xformA is None else xformA
+    F_B = np.eye(len(A_s)) if xformB is None else xformB
+    I = np.eye(len(A_s))
+    if B_t is None:
+        F_B_B_ = np.linalg.pinv(F_B @ B_s)
+    else:
+        F_B_B_ = B_t_ = np.linalg.pinv(B_t)
+    if A_s is None:
+        F_A_A = F_A @ A_s
+    else:
+        F_A_A = A_t
     
-    state_xform = (F_B_B_@(F_A-I)@A)
-    action_xform = (F_B_B_@B)
+    state_xform = (F_B_B_@(F_A_A-A_s))
+    action_xform = (F_B_B_@B_s)
     if ctrl_law is not None:
         # return K_F such that u = -K_F x
         K_F = state_xform + action_xform @ ctrl_law
@@ -57,19 +65,21 @@ def pseudo_matrix(sys: control.LinearIOSystem, dt=1e-2):
 
 def pseudo_matrix_from_data(
     env: gym.Env, n, control_law=None, n_episodes_or_steps='episodes'
-) -> np.ndarray:
+) -> Tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     xu, x = get_env_samples(
         env=env, control_law=control_law,
         n=n, n_episodes_or_steps=n_episodes_or_steps
     )
-    P = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
-    return P
+    # P = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+    P = (x) @ np.linalg.pinv(xu)
+    err = np.linalg.norm(P @ xu - x, axis=0).mean()
+    return P, err, xu, x
 
 
 
 def get_env_samples(
     env: gym.Env, n, control_law=None, n_episodes_or_steps='episodes'
-):
+) -> Tuple[np.ndarray, np.ndarray]:
     if isinstance(control_law, np.ndarray):
         policy = lambda x: -control_law @ x
     elif control_law is None:
@@ -134,13 +144,11 @@ def get_transforms(
         data_driven_source = True
     # get the pseudo matrix representing source system dynamics
     if data_driven_source:
-        xu, x = get_env_samples(env, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
-        P_s = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+        P_s, err_s, *_ = pseudo_matrix_from_data(env, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
     else:
-        P_s = pseudo_matrix(_sys_linear, env.dt)
+        P_s, err_s = pseudo_matrix(_sys_linear, env.dt), 0.
     # get pseudo matrix representing target system dynamics
-    xu, x = get_env_samples(env_, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
-    P_t = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+    P_t, err_t, xu, x = pseudo_matrix_from_data(env_, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
     # get the relationship between source and target systems
     A_s, B_s, A_t, B_t, F_A, F_B = ab_xform_from_pseudo_matrix(P_s, P_t, env.dt)
     C_s, D_s = np.eye(len(A_s)), np.zeros_like(B_s)
@@ -154,11 +162,12 @@ def get_transforms(
         source_system = control.ss(A_s, B_s, C_s, D_s)
     else:
         source_system = _sys_linear
-    state_xform, action_xform = policy_transform(source_system, F_A, F_B)
+    state_xform, action_xform = policy_transform(source_system, F_A, F_B, A_t=A_t, B_t=B_t)
     ns = SimpleNamespace()
     ns.x = x.T # convert column vectors to row vectors
     ns.A_s, ns.B_s = A_s, B_s
     ns.F_A, ns.F_B = F_A, F_B
+    ns.err_s, ns.err_t = err_s, err_t
     return state_xform, action_xform, ns
 
 

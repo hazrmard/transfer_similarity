@@ -6,7 +6,7 @@ import scipy as sp
 
 
 
-def ab_xform_from_pseudo_matrix(P_s: np.ndarray, P_t: np.ndarray, dt: float=1e-2):
+def ab_xform_from_pseudo_matrix(P_s: np.ndarray, P_t: np.ndarray=None, dt: float=1e-2):
     """
     Infer A,B matrices from pseudo matrices for source and target tasks.
     Also inver the least-squares transformation F_A, F_B between those
@@ -30,27 +30,35 @@ def ab_xform_from_pseudo_matrix(P_s: np.ndarray, P_t: np.ndarray, dt: float=1e-2
     nactions = P_s.shape[1] - nstates
     # A -> P = [I + dt.A, dt.B] -> A = (P - I) / dt
     A_s = (P_s[:, :nstates] - np.eye(nstates)) / dt
-    A_t = (P_t[:, :nstates] - np.eye(nstates)) / dt
-    # A_t = F_A A_s
-    # F_A = A_t @ np.linalg.pinv(A_s)
-    F_A = (A_t @ A_s.T) @ np.linalg.pinv(A_s @ A_s.T)
     # B = P / dt
     B_s = P_s[:, nstates:] / dt
-    B_t = P_t[:, nstates:] / dt
-    # B_t = F_B B_s
-    # F_B = (B_t @ B_s.T) @ np.linalg.pinv(B_s @ B_s.T)
-    F_B = B_t @ np.linalg.pinv(B_s)
+    if P_t is not None:
+        A_t = (P_t[:, :nstates] - np.eye(nstates)) / dt
+        # A_t = F_A A_s
+        F_A = A_t @ np.linalg.pinv(A_s)
+        # F_A = (A_t @ A_s.T) @ np.linalg.pinv(A_s @ A_s.T)
+        B_t = P_t[:, nstates:] / dt
+        # B_t = F_B B_s
+        # F_B = (B_t @ B_s.T) @ np.linalg.pinv(B_s @ B_s.T)
+        F_B = B_t @ np.linalg.pinv(B_s)
+    else:
+        A_t, B_t, F_A, F_B = None, None, None, None
     return A_s, B_s, A_t, B_t, F_A, F_B
 
 
 
-def action_transform(x: np.ndarray, u: np.ndarray, A_s, B_s, F_A, F_B) -> np.ndarray:
-    F_BB_ = np.linalg.pinv(F_B@B_s)
+def action_transform(x: np.ndarray, u: np.ndarray, A_s, B_s, F_A, F_B, A_t=None, B_t=None) -> np.ndarray:
     udims = u.ndim
     I = np.eye(len(A_s))
     x = np.atleast_2d(x)
     u = np.atleast_2d(u)
-    u_ = (F_BB_ @ ((I - F_A) @ A_s @ x.T + B_s @ u.T)).T
+    if A_t is None and B_t is None:
+        B_t = F_B @ B_s
+        A_t = F_A @ A_s
+        F_BB_ = B_t_ = np.linalg.pinv(B_t)
+    # u_ = (F_BB_ @ ((I - F_A) @ A_s @ x.T + B_s @ u.T)).T
+    u_ = (B_t_ @ ((A_s @ x.T - A_t @ x.T) + B_s @ u.T)).T
+
     if udims==1:
         return u_.squeeze()
     return u_
@@ -61,7 +69,8 @@ def pseudo_matrix_from_data(
     xu, x, mode='xu-x'
 ) -> np.ndarray:
     if mode=='xu-x':
-        P = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+        # P = (x @ xu.T) @ np.linalg.pinv(xu @ xu.T)
+        P = (x) @ np.linalg.pinv(xu)
     return P
 
 

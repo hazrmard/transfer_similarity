@@ -23,9 +23,12 @@ from stable_baselines3.common.distributions import (
     make_proba_distribution,
 )
 
+from xform.functions import DynamicsModel
+
 
 __all__ = ['XformedPolicy', 'evaluate_policy', 'learn_rl', 'evaluate_rl', 'transform_rl_policy']
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 
 
 
@@ -177,6 +180,42 @@ class XformedPolicy(ActorCriticPolicy):
 
 
 
+class ModelBasedXformedPolicy(XformedPolicy):
+
+
+    def __init__(self, *args, source_model, target_model, **kwargs):
+        super().__init__(*args, state_xform=None, action_xform=None, learnable=False)
+        self.source_model = source_model
+        self.target_model = target_model
+
+
+    def forward(self, obs: torch.Tensor, deterministic: bool = False):
+        """
+        Forward pass in all the networks (actor and critic)
+
+        :param obs: Observation
+        :param deterministic: Whether to sample or use deterministic actions
+        :return: action, value and log probability of the action
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+
+        mean_action_source = self.action_net(latent_pi)
+        mean_state_rate = self.source_model.A(obs) + (self.source_model.B @ mean_action_source.T).T
+        mean_target_state_rate = self.source_model.A(obs)
+        mean_action = torch.linalg.pinv(self.target_model.B) @ (mean_state_rate - mean_target_state_rate)
+
+        # Evaluate the values for the given observations
+        values = self.value_net(latent_vf)
+        # Method changed to no longer take latent vectors:
+        distribution = self._get_action_dist_from_mean(mean_action, latent_pi=latent_pi)
+        actions = distribution.get_actions(deterministic=deterministic)
+        log_prob = distribution.log_prob(actions)
+        return actions, values, log_prob
+
+
+
 def dtensor_dx(tensor: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     assert x.requires_grad, 'input gradient tracking is off'
     dtensor_dtensor = torch.ones_like(tensor)
@@ -236,6 +275,7 @@ def learn_rl(
     env, steps=50_000, tensorboard_log=None, learning_rate=1e-3, verbose=0,
     seed=None, reuse_parameters_of=None, learnable_transformation=False,
     constrained_actions=None, reset_num_timesteps=True, reuse_logger=False,
+    policy_class=XformedPolicy,
     **kwargs
 ):
     # process arguments
@@ -256,7 +296,7 @@ def learn_rl(
         logname = logpath[-1]
 
     
-    model = PPO(XformedPolicy, env, verbose=verbose,
+    model = PPO(policy_class, env, verbose=verbose,
                 tensorboard_log=None if tensorboard_log is None else logdir,
                 learning_rate=learning_rate,
                 seed=seed, **kwargs)
@@ -300,7 +340,7 @@ def learn_rl(
         # now params dict contains *xform iff learnable_transformation=True,
         # The transform function has already created & assigned values to the
         # *xform tensors in model.policy
-        model.policy.load_state_dict(params)
+        model.policy.load_state_dict(params, strict=False)
     # print('HERE')
     # print(model.policy.state_xform.device, next(model.policy.parameters()).device)
     model.learn(total_timesteps=steps, tb_log_name=logname,

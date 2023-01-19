@@ -7,8 +7,117 @@ from gym.envs.box2d.lunar_lander import (
     SCALE, VIEWPORT_H, VIEWPORT_W, FPS, LEG_DOWN
 )
 import numpy as np
+import gym
+import control
+
+from .base import SystemEnv
 
 FPS = 25
+
+
+
+def create_lunarlander(
+    mass = 1,
+    width=1, height=2,
+    sheight = 1.,
+    relative_power = np.asarray([1., 1.], dtype=np.float32),
+    off_thresh = 0.5,
+    side_power = 1.,
+    main_power = 15,
+  ):
+    gravity = 10.
+    inertia = (1/12) * mass * (width**2 + height**2)
+    weight = mass * gravity
+
+    def dxdt(t, x, u, *params):
+        c,s = np.cos(x[4]), np.sin(x[4])
+        main, side = u[0], u[1]
+        if abs(side) < off_thresh:
+            side = 0
+        direction = np.sign(u[1])
+        side = np.clip(side, -1, 1) * side_power * relative_power[0 if direction==-1 else 1]
+        main = (np.clip(main, 0, 1) + 1) * 0.5 * main_power
+        
+        dx = np.zeros_like(x)
+        # position (2)
+        # x',y'= = velocity
+        dx[:2] = x[2:4]
+        # velocity (2)
+        # x''=(thrust*cos(angle)+(-rside*cos(angle))+(lside*cos(angle))/mass
+        # y''=thrust*sin(angle)+(rside*sin(angle))+(-lside*sin(angle))) / mass
+        dx[2] = ((main * -s) + (-side*c)) / mass
+        dx[3] = ((main * c) - weight + (-side*s)) / mass
+        # angle (1)
+        # w' = angular vel
+        dx[4] = x[5]
+        # angular vel (1)
+        # w'' = (rside-lside)*sheight) / inertia
+        dx[5] = side * sheight / inertia
+        # legs (2)
+        return dx
+
+    sys = control.NonlinearIOSystem(dxdt, None, name='LanderSys',
+                                   inputs=2, outputs=8, states=8)
+    return sys
+
+
+class LanderEnv(SystemEnv):
+
+
+    def __init__(self, *args, dt=0.1, seed=0, **kwargs):
+        system = create_lunarlander(**kwargs)
+        # x, y, vx, vy, angle, angle rate, leg1 contact, leg2 contact
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32, seed=seed)
+        # main thrust, side thrust
+        self.action_space = gym.spaces.Box(low=-1, high=1, shape=(2,), dtype=np.float32, seed=seed)
+        self.init_y = 50
+        self.max_land_tilt = np.arctan(0.5)
+        self.period = 5 * np.sqrt(2 * self.init_y / 2.5) / dt
+        super().__init__(system, dt=dt, seed=seed)
+
+
+    def reset(self, x=None):
+        super().reset(x)
+        self.prev_shaping = None
+        if x is None:
+            x = np.zeros(8, np.float32)
+            x[1] = self.init_y
+            x[2:4] = self.random.uniform(-10, 10, size=2)
+        else:
+            x = np.asarray(x, np.float32)
+        self.x = x
+        return self.x
+
+
+    def reward(self, xold, u, x):
+        shaping = (
+            -1 * np.sqrt(x[0] * x[0] + x[1] * x[1])
+            - 1 * np.sqrt(x[2] * x[2] + x[3] * x[3])
+            - 1 * abs(x[4])
+            + 0.10 * x[6]
+            + 0.10 * x[7]
+        )
+        if self.prev_shaping is not None:
+            reward = shaping - self.prev_shaping
+        else:
+            reward = 0
+        self.prev_shaping = shaping
+        return reward
+
+    def step(self, u, from_x=None, persist=True):
+        x, r, d, *_, i = super().step(u, from_x=from_x, persist=persist)
+        done = False
+        if x[1] <=0:
+            done = True
+            if abs(x[0]) > 1 or abs(x[4]) > self.max_land_tilt:
+                r -= 100
+            else:
+                r += 100
+        elif self.n >= self.period:
+            done = True
+            r -= 100
+        return x, r, done, *_, i
+
 
 
 class LunarLanderEnv(LunarLanderContinuous):

@@ -4,7 +4,7 @@ import numpy as np
 from multirotor.simulation import Multirotor
 
 
-
+# TODO: Check if a state-space representation can be made.
 class TrajEnv(gym.Env):
 
     
@@ -106,21 +106,3 @@ def controller(
     d_err = -new_velocity
     dstate = np.asarray([*d_err, *real_acceleration], np.float32)
     return dstate
-
-
-
-class LowerLevelSystem:
-
-
-    def __init__(self, disturbance, vehicle: Multirotor, controller):
-        self.disturbance = disturbance
-        self.vehicle = vehicle
-        self.controller = controller
-
-
-    def dxdt(self, t, x, u: np.ndarray) -> np.ndarray:
-        dynamics = self.controller.step()
-        dxdt = self.vehicle.dxdt()
-        self.vehicle.step()
-        return dxdt
-
