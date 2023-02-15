@@ -13,3 +13,6 @@
 [submodule "src/vendor/py-scurve"]
 	path = src/vendor/py-scurve
 	url = git@github.com:hazrmard/py-scurve.git
+[submodule "src/vendor/garage"]
+	path = src/vendor/garage
+	url = https://github.com/rlworkgroup/garage

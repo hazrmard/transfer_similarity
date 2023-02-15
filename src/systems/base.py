@@ -20,6 +20,7 @@ class SystemEnv(gym.Env):
         self.x = None
         self.dxdt = 0
         self.n = 0
+        self.t = 0
         self.random = np.random.RandomState(seed)
 
 
@@ -39,6 +40,7 @@ class SystemEnv(gym.Env):
                   self.observation_space.sample()
                  ).astype(self.dtype)
         self.n = 0
+        self.t = 0
         self.dxdt = 0
         return self.x
 
@@ -59,6 +61,7 @@ class SystemEnv(gym.Env):
         r = self.reward(old_x, u, new_x)
         if persist:
             self.n += 1
+            self.t += self.dt
             self.x = new_x
             self.dxdt = new_dxdt
         return new_x, r, False, {'u': u, 'dxdt': new_dxdt}

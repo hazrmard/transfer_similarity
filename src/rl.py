@@ -226,12 +226,16 @@ def dtensor_dx(tensor: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 
 # From: https://stable-baselines3.readthedocs.io/en/master/guide/tensorboard.html#logging-hyperparameters
 class HParamCallback(BaseCallback):
-    def __init__(self):
+    def __init__(self, log_env_params: tuple=()):
         """
         Saves the hyperparameters and metrics at the start of the training,
         and logs them to TensorBoard.
         """
         super().__init__()
+        self.log_env_params = log_env_params
+    
+    def get_env(self):
+        return self.model.env.envs[0].env
 
     def _on_training_start(self) -> None:
         hparam_dict = {
@@ -248,6 +252,8 @@ class HParamCallback(BaseCallback):
             "SDE": self.model.use_sde,
             "SDE_freq": self.model.sde_sample_freq
         }
+        env = self.get_env()
+        hparam_dict.update({k:getattr(env, k) for k in self.log_env_params})
         if callable(self.model.learning_rate):
             hparam_dict["learning rate init"] = self.model.learning_rate(1)
             hparam_dict["learning rate final"] = self.model.learning_rate(0)
@@ -276,6 +282,7 @@ def learn_rl(
     seed=None, reuse_parameters_of=None, learnable_transformation=False,
     constrained_actions=None, reset_num_timesteps=True, reuse_logger=False,
     policy_class=XformedPolicy,
+    log_env_params: tuple=(),
     **kwargs
 ):
     # process arguments
@@ -289,11 +296,11 @@ def learn_rl(
     logname = None
     if tensorboard_log is not None:
         logpath = tensorboard_log.split('/')
-        if len(logpath) > 1:
-            logdir = './tensorboard/' + '/'.join(logpath[:-1])
+        if len(logpath) > 0:
+            logdir = './tensorboard/' + '/'.join(logpath)
         else:
             logdir = './tensorboard/'
-        logname = logpath[-1]
+        logname = 'trial'
 
     
     model = PPO(policy_class, env, verbose=verbose,
@@ -344,7 +351,8 @@ def learn_rl(
     # print('HERE')
     # print(model.policy.state_xform.device, next(model.policy.parameters()).device)
     model.learn(total_timesteps=steps, tb_log_name=logname,
-                callback=HParamCallback(), reset_num_timesteps=reset_num_timesteps,
+                callback=HParamCallback(log_env_params),
+                reset_num_timesteps=reset_num_timesteps,
                 progress_bar=True)
     return model
 
