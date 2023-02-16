@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Callable
 
 from collections import deque
 import numpy as np
@@ -50,11 +50,11 @@ VP = VehicleParams(
         [0, 0, 0.4238]
     ])
 )
-SP = SimulationParams(dt=0.001, g=9.81)
+SP = SimulationParams(dt=0.01, g=9.81)
 
 
 
-def get_controller(m: Multirotor, max_velocity=5., max_acceleration=3.):
+def get_controller(m: Multirotor, max_velocity=1., max_acceleration=3.) -> Controller:
     assert m.simulation.dt <= 0.1, 'Simulation time step too large.'
     pos = PosController(
         1.0, 0., 0., 1., vehicle=m,
@@ -74,6 +74,7 @@ def get_controller(m: Multirotor, max_velocity=5., max_acceleration=3.):
         # [0.01234, 0.01234, 0.],
         [0.5,0.5,0.5],
         vehicle=m)
+
     alt = AltController(
         1, 0, 0,
         1, vehicle=m)
@@ -91,12 +92,18 @@ def get_controller(m: Multirotor, max_velocity=5., max_acceleration=3.):
 def create_multirotor(
     vp=VP, sp=SP, name='multirotor', xformA=np.eye(12), xformB=np.eye(4),
     return_mult_ctrl=False,
-    kind: Literal['speeds', 'dynamics']='dynamics',
-    max_rads: float=700
+    kind: Literal['speeds', 'dynamics', 'waypoints']='dynamics',
+    max_rads: float=700,
+    get_controller_fn: Callable[[Multirotor], Controller]=None
 ):
     m = Multirotor(vp, sp)
-    ctrl = None
+    if get_controller_fn is None:
+        ctrl = get_controller(m)
+    else:
+        ctrl = get_controller_fn(m)
+
     if kind=='dynamics':
+        inputs=['fz','tx','ty','tz']
         def update_fn(t, x, u, params):
             speeds = m.allocate_control(u[0], u[1:4])
             speeds = np.clip(speeds, a_min=-max_rads, a_max=max_rads)
@@ -105,18 +112,17 @@ def create_multirotor(
     elif kind=='speeds':
         raise NotImplementedError # TODO
     elif kind=='waypoints':
-        ctrl = get_controller(m)
+        inputs=['x','y','z','yaw']
         def update_fn(t, x, u, params):
-            dynamics = ctrl.step(x, ref_is_error=True)
+            dynamics = ctrl.step(u)
             speeds = m.allocate_control(dynamics[0], dynamics[1:4])
             speeds = np.clip(speeds, a_min=-max_rads, a_max=max_rads)
             dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds)
             return dxdt
-        raise NotImplementedError # TODO
 
     sys = control.NonlinearIOSystem(
         updfcn=update_fn,
-        inputs=['fz','tx','ty','tz'],
+        inputs=inputs,
         states=['x','y','z',
                 'vx','vy','vz',
                 'roll','pitch','yaw',
@@ -127,241 +133,241 @@ def create_multirotor(
     return sys
 
 
-
-class MultirotorEnv(SystemEnv):
+class MultirotorAllocEnv(SystemEnv):
 
 
     def __init__(
         self, vp=VP, sp=SP,
-        q=np.diagflat([1,1,1,1,1,1,0.1,0.1,1,0.1,0.1,1]),
-        r = np.diagflat([1,1,1,100]) * 1e-4,
+        q=np.diagflat([1,1,1,0.25,0.25,0.25,0.5,0.5,0.5,0.1,0.1,0.1]),
+        r = np.diagflat([1,1,1,1]) * 1e-4,
         dt=None, seed=None,
-        max_angular_acc=1.0,
         xformA=np.eye(12), xformB=np.eye(4),
         state_buffer_size: int=0,
-        unnormalize: bool=True,
-        clip: bool=True
+        normalize: bool=True, # actions/states are [-1,1]
+        clip: bool=True,
+        get_controller_fn: Callable[[Multirotor], Controller]=None,
+        additive_factor: float=0.1,
+        steps_u: int=1,
     ):
         system, extra = create_multirotor(
             vp, sp, xformA=xformA, xformB=xformB,
-            return_mult_ctrl=True
+            return_mult_ctrl=True,
+            get_controller_fn=get_controller_fn,
+            kind='dynamics'
         )
-        self.mult = extra['multirotor']
+        self.vehicle = extra['multirotor']
+        self.ctrl = extra['ctrl']
         super().__init__(system=system, q=q, r=r, dt=sp.dt, seed=seed, dtype=np.float32)
-        self.state_buffer_size = state_buffer_size
         self.observation_space = gym.spaces.Box(
+            # pos err, vel err, angle error, ang rate err, prescribed dynamics
             low=-np.inf, high=np.inf,
-            shape=(12 * (1 + state_buffer_size),), dtype=self.dtype
+            shape=(12+4,), dtype=self.dtype
         )
-        self.state_buffer = deque(maxlen=self.state_buffer_size+1)
         self.action_space = gym.spaces.Box(
             # thrust, torque_x, torque_y, torque_z
             low=-1, high=1, shape=(4,), dtype=self.dtype
         )
-        self.period = int(5 / sp.dt)
-        self.nominal_thrust = vp.mass * sp.g
-        self.max_angular_acc = max_angular_acc
+        self.period = int(20 / sp.dt)
+        self.max_angular_acc = self.ctrl.ctrl_r.max_acceleration
         self.max_torque = min(
             np.abs(vp.inertia_matrix.diagonal()) * self.max_angular_acc
         )
-        self._min = np.asarray([
-            -1,
-            0, 0, 0
-        ]).astype(self.dtype)
-        self._range = np.asarray([
-            self.nominal_thrust,
-            self.max_torque, self.max_torque, self.max_torque
-        ]).astype(self.dtype)
-        self._min_dyn = -np.asarray([
+        _min_dyn = -np.asarray([
             0,
-            self.max_torque, self.max_torque, self.max_torque
+            self.max_torque, self.max_torque, 0
         ]).astype(self.dtype)
-        self._max_dyn = np.asarray([
-            (1-self._min[0]) * self.mult.weight,
-            self.max_torque, self.max_torque, self.max_torque
+        _max_dyn = np.asarray([
+            2 * self.vehicle.weight,
+            self.max_torque, self.max_torque, 0
         ]).astype(self.dtype)
-        self.unnormalize = unnormalize
-        self.clip = clip
+        self.action_range = _max_dyn - _min_dyn
+        self.state_range = np.asarray([5,5,5,5,5,5,0.62,0.62,0.62,0.62,0.62,0.62], self.dtype)
+        self.state_range = np.concatenate((self.state_range, self.action_range), dtype=self.dtype)
+        self.steps_u = steps_u
+
+        self.additive_factor = additive_factor
+        self.fail_penalty = self.dt * self.period
+        self.time_penalty = self.dt * self.steps_u
 
 
     @property
     def state(self) -> np.ndarray:
-        return np.concatenate(self.state_buffer, dtype=self.dtype)
-    @state.setter
-    def state(self, x: np.ndarray):
-        x = np.asarray(x, dtype=self.dtype)
-        for i in range(self.state_buffer_size + 1):
-            self.state_buffer.append(x)
-        self.x = np.asarray(x, dtype=self.dtype)
+        return self.normalize_state(
+            np.concatenate((self.x, self.ctrl.action), dtype=self.dtype)
+        )
+
+
+    def normalize_state(self, state):
+        state[12] -= self.vehicle.weight
+        return state * 2 / (self.state_range+1e-6)
+    def unnormalize_state(self, state):
+        state *= self.state_range / 2
+        state[12] += self.vehicle.weight
+        return state
+    def normalize_action(self, u):
+        u[0] -= self.vehicle.weight
+        return u * 2 / (self.action_range+1e-6)
+    def unnormalize_action(self, u):
+        u *= self.action_range / 2
+        u[0] += self.vehicle.weight
+        return u
 
 
     def reset(self, x=None):
         super().reset(x)
+        self.ctrl.reset()
         pos = np.asarray(x[0:3]) if x is not None else \
-              self.random.uniform(-0.2, 0.2, size=3)
+              self.random.uniform(-2.5, 2.5, size=3)
         vel = np.asarray(x[3:6]) if x is not None else \
-              self.random.uniform(-0.05, 0.05, size=3)
+              self.random.uniform(-0.00, 0.00, size=3)
         ori = np.asarray(x[6:9]) if x is not None else \
-              self.random.uniform(-0.2, 0.2, size=3)
+              self.random.uniform(-0., 0., size=3)
         rat = np.asarray(x[9:12]) if x is not None else \
-              self.random.uniform(-0.05, 0.05, size=3)
-        self.x = np.concatenate((pos, vel, ori, rat),
-                                dtype=self.dtype)
-        # fill state buffer with current state, ejecting last states
-        self.state = self.x
-        return self.x
+              self.random.uniform(-0.0, 0.0, size=3)
+        self.x = np.concatenate((pos, vel, ori, rat), dtype=self.dtype)
+        self.vehicle.state = self.x
+        return self.state
 
 
-    def step(self, u: np.ndarray):
-        # convert [-1,1] to range of actions in dynamics space, and clip optionally
-        if self.unnormalize:
-            # action is in [-1,1] space and needs to be converted to dynamics
-            if self.clip:
-                u = np.clip(u, a_min=-1, a_max=1)
-            u = (u - self._min) * self._range
-        elif self.clip:
-            # action is already as dynamics space, clip to max torque
-            u = np.clip(u, a_min=self._min_dyn, a_max=self._max_dyn)
+    def step(self, u: np.ndarray, **kwargs):
+        u = np.clip(u, a_min=-1., a_max=1.)
+        u = self.unnormalize_action(u)
+        u = (self.additive_factor * u) + (1-self.additive_factor) * (self.ctrl.action)
+        olddist = np.linalg.norm(self.x[:3])
         x, r, d, *_, i = super().step(u)
-        self.state_buffer.append(x)
+        # The controller action is updated based on the current state of the vehicle,
+        # after the action has been applied
+        self.ctrl.step(reference=np.zeros(12), measurement=self.x)
         # since SystemEnv is only using Multirotor.dxdt methods, the mult
         # object is not integrating the change in state. Therefore manually
-        # set the state on the self.mult object to reflect the integration
+        # set the state on the self.vehicle object to reflect the integration
         # that SystemEnv.step() does
-        self.mult.state = x
-        done = (self.n >= self.period)
-        return x, r, done, *_, i
+        self.vehicle.state = self.x
+        # reward/termination logic
+        dist = np.linalg.norm(self.x[:3])
+        change = olddist - dist
+        reached = dist <= 0.1
+        outofbounds = (dist >= self.state_range[0])
+        outoftime = self.n >= self.period
+        tipped = any(self.x[6:9] > self.ctrl.ctrl_v.max_tilt)
+        done = outoftime or outofbounds or reached or tipped
+        reward = -self.dt
+        if reached:
+            reward += 10.
+        elif outofbounds or tipped:
+            reward -= self.fail_penalty
+        reward += change * 10
+        return self.state, reward, done, *_, i
 
 
 
-class ControlledMultirotorEnv(MultirotorEnv):
+class MultirotorTrajEnv(SystemEnv):
 
-    
+
     def __init__(
-        self, vp, sp, q=np.eye(12), dt=None, seed=None,
-        max_angular_acc=1.0,
+        self, vp=VP, sp=SP,
+        q=np.diagflat([1,1,1,0.25,0.25,0.25,0.5,0.5,0.5,0.1,0.1,0.1]),
+        r = np.diagflat([1,1,1,0]) * 1e-4,
+        dt=None, seed=None,
         xformA=np.eye(12), xformB=np.eye(4),
         state_buffer_size: int=0,
-        ctrl_state: bool=False
-
+        normalize: bool=True, # actions/states are [-1,1]
+        get_controller_fn: Callable[[Multirotor], Controller]=None,
+        scaling_factor: float=1.,
+        steps_u: int=1
     ):
-        super().__init__(
-            vp, sp, q=q, dt=dt, seed=seed,
-            max_angular_acc=max_angular_acc,
-            xformA=xformA, xformB=xformB,
-            state_buffer_size= state_buffer_size
+        system, extra = create_multirotor(
+            vp, sp, xformA=xformA, xformB=xformB,
+            return_mult_ctrl=True,
+            get_controller_fn=get_controller_fn,
+            kind='waypoints'
         )
-        self.ctrl = get_controller(self.mult)
-        self.ctrl_state = ctrl_state
+        self.vehicle = extra['multirotor']
+        self.ctrl = extra['ctrl']
+        super().__init__(system=system, q=q, r=r, dt=sp.dt, seed=seed, dtype=np.float32)
         self.observation_space = gym.spaces.Box(
-            # pos, vel, ori, rat, pid errors...
-            low=-np.inf, high=np.inf,
-            shape=((1+state_buffer_size) * 12 + (18 if ctrl_state else 0),),
-            dtype=self.dtype
+            # pos err, vel err, angle error, ang rate err, prescribed dynamics
+            low=-1, high=1,
+            shape=(12,), dtype=self.dtype
         )
         self.action_space = gym.spaces.Box(
-            # x,y,z,yaw
-            low=-1, high=1, shape=(4,), dtype=self.dtype
+            # x,y
+            low=-1, high=1, shape=(2,), dtype=self.dtype
         )
+        self.period = 20 # seconds
+        self.state_range = np.asarray([5,5,5,5,5,5,0.62,0.62,0.62,0.62,0.62,0.62], self.dtype)
+        self.action_range = self.state_range[:2]
+        self.steps_u = steps_u
+
+        self.scaling_factor = scaling_factor
+        self.fail_penalty = 10
+        self.time_penalty = self.dt * self.steps_u
 
 
     @property
-    def state(self):
-        if self.ctrl_state:
-            return np.concatenate([
-                super().state, self.ctrl.state
-            ], dtype=self.dtype)
-        return super().state
-    @state.setter
-    def state(self, x: np.ndarray):
-        x = np.asarray(x, dtype=self.dtype)
-        for _ in range(self.state_buffer_size + 1):
-            self.state_buffer.append(x[:12])
-        self.x = x[:12]
+    def state(self) -> np.ndarray:
+        return self.normalize_state(self.x)
 
 
-    def reward(self, xold, u, x):
-        return super().reward(None, u, x[:12])
+    def normalize_state(self, state):
+        return state * 2 / (self.state_range+1e-6)
+    def unnormalize_state(self, state):
+        state *= self.state_range / 2
+        return state
+    def normalize_action(self, u):
+        return u * 2 / (self.action_range+1e-6)
+    def unnormalize_action(self, u):
+        u *= self.action_range / 2
+        return u
 
 
     def reset(self, x=None):
+        super().reset(x)
         self.ctrl.reset()
-        self.x = super().reset(x)
-        self.x[1:] = 0
-        # the exported state is a combination of the multirotor and controller
-        return self.state, {}
+        pos = np.asarray(x[0:3]) if x is not None else \
+              self.random.uniform(-2.5, 2.5, size=3)
+        vel = np.asarray(x[3:6]) if x is not None else \
+              self.random.uniform(-0.00, 0.00, size=3)
+        ori = np.asarray(x[6:9]) if x is not None else \
+              self.random.uniform(-0., 0., size=3)
+        rat = np.asarray(x[9:12]) if x is not None else \
+              self.random.uniform(-0.0, 0.0, size=3)
+        self.x = np.concatenate((pos, vel, ori, rat), dtype=self.dtype)
+        self.vehicle.state = self.x
+        return self.state
 
 
-    def step(self, u: np.ndarray):
-        dynamics = self.ctrl.step(u, ref_is_error=True)
-        # action is already in dynamics space, but needs to be clipped to the
-        # environment's max torque/thrust bounds
-        x, r, d, *_, i = super().step(dynamics, unnormalize=False, clip=True)
-        return self.state, r, d, False, {'u': u}
+    def step(self, u: np.ndarray, **kwargs):
+        u = np.clip(u, a_min=-1., a_max=1.)
+        u = self.unnormalize_action(u)
+        u *= self.scaling_factor
+        oldpos = self.x[:2]
+        for _ in range(self.steps_u):
+            x, r, d, *_, i = super().step(np.concatenate((u,[0,0])))
+            # since SystemEnv is only using Multirotor.dxdt methods, the mult
+            # object is not integrating the change in state. Therefore manually
+            # set the state on the self.vehicle object to reflect the integration
+            # that SystemEnv.step() does
+            self.vehicle.state = self.x
+            self.vehicle.t = self.t
 
+        dist = np.linalg.norm(self.x[:3])
+        reached = dist <= 0.1
+        outofbounds = (dist >= self.state_range[0])
+        outoftime = self.t >= self.period
+        tipped = any(self.x[6:9] > self.ctrl.ctrl_v.max_tilt)
+        done = outoftime or outofbounds or reached or tipped
 
-
-
-class TwoDimWrapper(MultirotorEnv):
-    
-    def __init__(self, *args, condition=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.condition = condition
-        if self.condition=='pitch':
-            pitch = self.q[7,7]
-            self.q[:] = 0
-            self.q[7,7] = pitch
-        elif self.condition=='pitchvel':
-            pitch = self.q[7,7]
-            pitchvel = self.q[10,10]
-            self.q[:] = 0
-            self.q[7,7] = pitch
-            self.q[7,7] = pitchvel
-        elif self.condition=='rollpitch':
-            roll = self.q[6,6]
-            pitch = self.q[7,7]
-            self.q[:] = 0
-            self.q[6,6] = roll
-            self.q[7,7] = pitch
-        else:
-            self.q[1,1] = 0 # keep x,z position
-            self.q[4,4] = 0 # keep x,z velocity
-            self.q[6,6] = 0 # only keep pitch
-            self.q[8,8] = 0 # only keep pitch
-            self.q[9,9] = 0 # only keep pitch rate
-            self.q[11,11] = 0 # only keep pitch rate
-    
-    def step(self, u):
-        # only allow thrust and pitch
-        if self.condition=='pitch' or self.condition == 'pitchvel':
-            u[0] = 0.
-            u[1] = 0.
-            u[3] = 0.
-        elif self.condition=='rollpitch':
-            u[0] = 0
-            u[3] = 0
-        return super().step(u)
-
-    def reset(self, x=None):
-        x = super().reset(x)
-        if self.condition=='zero':
-            x[:] = 0
-        elif self.condition=='pitch':
-            for i in range(x.shape[0]):
-                if i!=7: x[i]=0 # pitch=7
-        elif self.condition=='pitchvel':
-            for i in range(x.shape[0]):
-                if i!=7 or i!=10: x[i]=0 # pitch=7, pitchvel=10
-        elif self.condition=='rollpitch':
-            for i in range(x.shape[0]):
-                if i!=6 and i!=7:
-                    x[i]=0 # pitch=7, roll=6
-        else:
-            x[1] = 0
-            x[4] = 0
-            x[6] = 0
-            x[8] = 0
-            x[9] = 0
-            x[11] = 0
-        self.x = x
-        return self.x, {}
+        pos = self.x[:2]
+        des_vec = u - oldpos
+        des_vec /= np.linalg.norm(des_vec)
+        dpos = pos - oldpos
+        advance = np.dot(dpos, des_vec)
+        cross = np.linalg.norm(np.cross(dpos, des_vec))
+        reward = -self.time_penalty
+        if reached:
+            reward += self.fail_penalty
+        elif outofbounds or tipped:
+            reward -= self.fail_penalty
+        reward += (advance - cross) * 10
+        return self.state, reward, done, *_, i
