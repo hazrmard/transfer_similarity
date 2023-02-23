@@ -300,7 +300,7 @@ def learn_rl(
             logdir = './tensorboard/' + '/'.join(logpath)
         else:
             logdir = './tensorboard/'
-        logname = 'trial'
+        logname = 'run'
 
     
     model = PPO(policy_class, env, verbose=verbose,
@@ -428,3 +428,17 @@ def evaluate_rl(agent: PPO, env: gym.Env, n_eval_episodes=50):
     end = time.time()
     runtime = (end - start) / n_eval_episodes
     return *res, runtime
+
+
+
+def save_agent(agent: PPO, dest):
+    agent.save(dest)
+
+
+
+
+def load_agent(dest) -> PPO:
+    agent = PPO.load(dest)
+    agent.policy.state_xform = agent.policy.state_xform.to(agent.policy.device)
+    agent.policy.action_xform = agent.policy.action_xform.to(agent.policy.device)
+    return agent

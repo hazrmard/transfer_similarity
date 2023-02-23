@@ -33,7 +33,8 @@ PP = PropellerParams(
     # k_thrust=5.28847e-05, # 15 inch propeller
     k_drag=1.8503e-06, # 18-inch propeller
     # k_drag=1.34545e-06, # 15-inch propeller
-    motor=MP
+    # motor=MP
+    motor=None
 )
 VP = VehicleParams(
     propellers=[PP] * 8,
@@ -94,30 +95,30 @@ def create_multirotor(
     return_mult_ctrl=False,
     kind: Literal['speeds', 'dynamics', 'waypoints']='dynamics',
     max_rads: float=700,
-    get_controller_fn: Callable[[Multirotor], Controller]=None
+    get_controller_fn: Callable[[Multirotor], Controller]=get_controller,
+    disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda _: np.zeros(3, np.float32)
 ):
     m = Multirotor(vp, sp)
-    if get_controller_fn is None:
-        ctrl = get_controller(m)
-    else:
-        ctrl = get_controller_fn(m)
+    ctrl = get_controller_fn(m)
 
     if kind=='dynamics':
         inputs=['fz','tx','ty','tz']
         def update_fn(t, x, u, params):
             speeds = m.allocate_control(u[0], u[1:4])
             speeds = np.clip(speeds, a_min=-max_rads, a_max=max_rads)
-            dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds)
+            dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds,
+            disturb_forces=disturbance_fn(m))
             return dxdt
     elif kind=='speeds':
         raise NotImplementedError # TODO
     elif kind=='waypoints':
         inputs=['x','y','z','yaw']
         def update_fn(t, x, u, params):
-            dynamics = ctrl.step(u)
+            dynamics = ctrl.step(u, ref_is_error=False)
             speeds = m.allocate_control(dynamics[0], dynamics[1:4])
             speeds = np.clip(speeds, a_min=-max_rads, a_max=max_rads)
-            dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds)
+            dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds,
+            disturb_forces=disturbance_fn(m))
             return dxdt
 
     sys = control.NonlinearIOSystem(
@@ -270,16 +271,17 @@ class MultirotorTrajEnv(SystemEnv):
         r = np.diagflat([1,1,1,0]) * 1e-4,
         dt=None, seed=None,
         xformA=np.eye(12), xformB=np.eye(4),
-        state_buffer_size: int=0,
-        normalize: bool=True, # actions/states are [-1,1]
         get_controller_fn: Callable[[Multirotor], Controller]=None,
+        disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda t: np.zeros(3, np.float32),
         scaling_factor: float=1.,
-        steps_u: int=1
+        steps_u: int=1,
+        bounding_box: float=5.
     ):
         system, extra = create_multirotor(
             vp, sp, xformA=xformA, xformB=xformB,
             return_mult_ctrl=True,
             get_controller_fn=get_controller_fn,
+            disturbance_fn=disturbance_fn,
             kind='waypoints'
         )
         self.vehicle = extra['multirotor']
@@ -291,17 +293,19 @@ class MultirotorTrajEnv(SystemEnv):
             shape=(12,), dtype=self.dtype
         )
         self.action_space = gym.spaces.Box(
-            # x,y
-            low=-1, high=1, shape=(2,), dtype=self.dtype
+            # x,y,z
+            low=-1, high=1, shape=(3,), dtype=self.dtype
         )
-        self.period = 20 # seconds
-        self.state_range = np.asarray([5,5,5,5,5,5,0.62,0.62,0.62,0.62,0.62,0.62], self.dtype)
-        self.action_range = self.state_range[:2]
+        self.scaling_factor = scaling_factor
+        self.bounding_box = bounding_box
+        self.state_range = np.empty(self.observation_space.shape, self.dtype)
+        self.action_range = np.empty(self.action_space.shape, self.dtype)
         self.steps_u = steps_u
 
-        self.scaling_factor = scaling_factor
+        self.period = 20 # seconds
         self.fail_penalty = 10
         self.time_penalty = self.dt * self.steps_u
+        self._init_pos = None
 
 
     @property
@@ -324,16 +328,26 @@ class MultirotorTrajEnv(SystemEnv):
     def reset(self, x=None):
         super().reset(x)
         self.ctrl.reset()
+        self.state_range[0:3] = self.bounding_box
+        self.state_range[3:6] = self.ctrl.ctrl_p.max_velocity
+        self.state_range[6:9] = 2 * self.ctrl.ctrl_v.max_tilt
+        # Max velocity equals the max angle err * k_p to convert to rate
+        self.state_range[9:12] = 2 * self.ctrl.ctrl_v.max_tilt * self.ctrl.ctrl_a.k_p
+        self.action_range = self.state_range[:self.action_space.shape[0]]
+
         pos = np.asarray(x[0:3]) if x is not None else \
-              self.random.uniform(-2.5, 2.5, size=3)
+              self.random.uniform(-self.bounding_box, self.bounding_box, size=3) / 2
         vel = np.asarray(x[3:6]) if x is not None else \
-              self.random.uniform(-0.00, 0.00, size=3)
+              self.random.uniform(-self.ctrl.ctrl_p.max_velocity, self.ctrl.ctrl_p.max_velocity, size=3) / 2
         ori = np.asarray(x[6:9]) if x is not None else \
               self.random.uniform(-0., 0., size=3)
         rat = np.asarray(x[9:12]) if x is not None else \
               self.random.uniform(-0.0, 0.0, size=3)
         self.x = np.concatenate((pos, vel, ori, rat), dtype=self.dtype)
         self.vehicle.state = self.x
+        # The desired direction of trajectory. Equal to straight line from initial
+        # position to origin.
+        self._des_vec = (0 - self.x[:self.action_space.shape[0]]) / np.linalg.norm(self.x[:self.action_space.shape[0]])
         return self.state
 
 
@@ -341,29 +355,27 @@ class MultirotorTrajEnv(SystemEnv):
         u = np.clip(u, a_min=-1., a_max=1.)
         u = self.unnormalize_action(u)
         u *= self.scaling_factor
-        oldpos = self.x[:2]
+        oldpos = self.x[:3]
         for _ in range(self.steps_u):
-            x, r, d, *_, i = super().step(np.concatenate((u,[0,0])))
+            x, r, d, *_, i = super().step(np.concatenate((u,[0])))
             # since SystemEnv is only using Multirotor.dxdt methods, the mult
             # object is not integrating the change in state. Therefore manually
             # set the state on the self.vehicle object to reflect the integration
             # that SystemEnv.step() does
             self.vehicle.state = self.x
             self.vehicle.t = self.t
+        pos = self.x[:3]
 
         dist = np.linalg.norm(self.x[:3])
         reached = dist <= 0.1
-        outofbounds = (dist >= self.state_range[0])
+        outofbounds = np.any(self.x[:3] > self.bounding_box / 2)
         outoftime = self.t >= self.period
-        tipped = any(self.x[6:9] > self.ctrl.ctrl_v.max_tilt)
+        tipped = np.any(self.x[6:9] > self.ctrl.ctrl_v.max_tilt)
         done = outoftime or outofbounds or reached or tipped
 
-        pos = self.x[:2]
-        des_vec = u - oldpos
-        des_vec /= np.linalg.norm(des_vec)
         dpos = pos - oldpos
-        advance = np.dot(dpos, des_vec)
-        cross = np.linalg.norm(np.cross(dpos, des_vec))
+        advance = np.dot(dpos, self._des_vec)
+        cross = np.linalg.norm(np.cross(dpos, self._des_vec))
         reward = -self.time_penalty
         if reached:
             reward += self.fail_penalty

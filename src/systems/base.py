@@ -56,7 +56,7 @@ class SystemEnv(gym.Env):
         u = np.asarray(u, dtype=self.dtype)
         old_dxdt = self.dxdt
         old_x = np.asarray(self.x if from_x is None else from_x, dtype=self.dtype)
-        new_dxdt = self.system.dynamics(None, old_x, u)
+        new_dxdt = self.system.dynamics(self.t, old_x, u)
         new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * self.dt).astype(self.dtype)
         r = self.reward(old_x, u, new_x)
         if persist:
