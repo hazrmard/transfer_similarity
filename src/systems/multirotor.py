@@ -84,7 +84,7 @@ def get_controller(m: Multirotor, max_velocity=1., max_acceleration=3.) -> Contr
         1, vehicle=m)
     ctrl = Controller(
         pos, vel, att, rat, alt, alt_rate,
-        interval_p=0.1, interval_a=0.01, interval_z=0.1
+        period_p=0.1, period_a=0.01, period_z=0.1
     )
     return ctrl
 
@@ -271,10 +271,12 @@ class MultirotorTrajEnv(SystemEnv):
         r = np.diagflat([1,1,1,0]) * 1e-4,
         dt=None, seed=None,
         xformA=np.eye(12), xformB=np.eye(4),
-        get_controller_fn: Callable[[Multirotor], Controller]=None,
-        disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda t: np.zeros(3, np.float32),
+        get_controller_fn: Callable[[Multirotor], Controller]=get_controller,
+        disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda m: np.zeros(3, np.float32),
         scaling_factor: float=1.,
         steps_u: int=1,
+        # length of cube centered at origin within which position is initialized,
+        # half length of cube centered at origin within which vehicle may move
         bounding_box: float=5.
     ):
         system, extra = create_multirotor(
@@ -298,14 +300,15 @@ class MultirotorTrajEnv(SystemEnv):
         )
         self.scaling_factor = scaling_factor
         self.bounding_box = bounding_box
+        self.overshoot_factor = 0.5
         self.state_range = np.empty(self.observation_space.shape, self.dtype)
         self.action_range = np.empty(self.action_space.shape, self.dtype)
         self.steps_u = steps_u
 
         self.period = 20 # seconds
-        self.fail_penalty = 10
-        self.time_penalty = self.dt * self.steps_u
-        self._init_pos = None
+        self.max_time_penalty = self.period
+        self.motion_reward_scaling = 10
+        self.fail_penalty = self.pass_reward = self.bounding_box * self.motion_reward_scaling * 2
 
 
     @property
@@ -328,34 +331,42 @@ class MultirotorTrajEnv(SystemEnv):
     def reset(self, x=None):
         super().reset(x)
         self.ctrl.reset()
-        self.state_range[0:3] = self.bounding_box
-        self.state_range[3:6] = self.ctrl.ctrl_p.max_velocity
+        # Nominal range of state, not accounting for overshoot due to process dynamics
+        self.state_range[0:3] = 2 * self.bounding_box
+        self.state_range[3:6] = 2 * self.ctrl.ctrl_p.max_velocity
         self.state_range[6:9] = 2 * self.ctrl.ctrl_v.max_tilt
-        # Max velocity equals the max angle err * k_p to convert to rate
         self.state_range[9:12] = 2 * self.ctrl.ctrl_v.max_tilt * self.ctrl.ctrl_a.k_p
-        self.action_range = self.state_range[:self.action_space.shape[0]]
+        self.action_range = self.state_range[:self.action_space.shape[0]] * self.scaling_factor
+        # Max overshoot allowed, which will cause episode to terminate
+        self._max_pos = self.bounding_box * (1 + self.overshoot_factor) / 2
+        self._max_angle = self.ctrl.ctrl_v.max_tilt * (1 + self.overshoot_factor)
+        self._proximity = max(self.vehicle.params.distances)
+        self.time_penalty = self.dt * self.steps_u
 
         pos = np.asarray(x[0:3]) if x is not None else \
-              self.random.uniform(-self.bounding_box, self.bounding_box, size=3) / 2
+              self.random.uniform(-self.bounding_box/2, self.bounding_box/2, size=3)
         vel = np.asarray(x[3:6]) if x is not None else \
-              self.random.uniform(-self.ctrl.ctrl_p.max_velocity, self.ctrl.ctrl_p.max_velocity, size=3) / 2
+              self.random.uniform(-self.ctrl.ctrl_p.max_velocity/2, self.ctrl.ctrl_p.max_velocity/2, size=3)
         ori = np.asarray(x[6:9]) if x is not None else \
               self.random.uniform(-0., 0., size=3)
         rat = np.asarray(x[9:12]) if x is not None else \
               self.random.uniform(-0.0, 0.0, size=3)
         self.x = np.concatenate((pos, vel, ori, rat), dtype=self.dtype)
+        # Manually set underlying vehicle's state
         self.vehicle.state = self.x
         # The desired direction of trajectory. Equal to straight line from initial
         # position to origin.
-        self._des_vec = (0 - self.x[:self.action_space.shape[0]]) / np.linalg.norm(self.x[:self.action_space.shape[0]])
+        self._des_unit_vec = (0 - pos) / (np.linalg.norm(pos) + 1e-6)
         return self.state
 
 
     def step(self, u: np.ndarray, **kwargs):
         u = np.clip(u, a_min=-1., a_max=1.)
         u = self.unnormalize_action(u)
-        u *= self.scaling_factor
         oldpos = self.x[:3]
+        olddist = np.linalg.norm(oldpos)
+        old_turn = np.abs(self.x[8])
+        oldyaw = self.x[8]
         for _ in range(self.steps_u):
             x, r, d, *_, i = super().step(np.concatenate((u,[0])))
             # since SystemEnv is only using Multirotor.dxdt methods, the mult
@@ -364,22 +375,28 @@ class MultirotorTrajEnv(SystemEnv):
             # that SystemEnv.step() does
             self.vehicle.state = self.x
             self.vehicle.t = self.t
-        pos = self.x[:3]
+            dist = np.linalg.norm(self.x[:3])
+            reached = dist <= self._proximity
+            outofbounds = np.any(np.abs(self.x[:3]) > self._max_pos)
+            outoftime = self.t >= self.period
+            tipped = np.any(np.abs(self.x[6:9]) > self._max_angle)
+            done = outoftime or outofbounds or reached or tipped
+            if done:
+                i.update(dict(reached=reached, outofbounds=outofbounds, outoftime=outoftime, tipped=tipped))
+                break
 
-        dist = np.linalg.norm(self.x[:3])
-        reached = dist <= 0.1
-        outofbounds = np.any(self.x[:3] > self.bounding_box / 2)
-        outoftime = self.t >= self.period
-        tipped = np.any(self.x[6:9] > self.ctrl.ctrl_v.max_tilt)
-        done = outoftime or outofbounds or reached or tipped
 
-        dpos = pos - oldpos
-        advance = np.dot(dpos, self._des_vec)
-        cross = np.linalg.norm(np.cross(dpos, self._des_vec))
-        reward = -self.time_penalty
+        # advance = olddist - dist
+        delta_pos = (self.x[:3] - oldpos)
+        advance = np.linalg.norm(delta_pos)
+        cross = np.linalg.norm(np.cross(delta_pos, self._des_unit_vec))
+        delta_turn = np.abs(self.x[8]) - old_turn
+        # cross = 0.
+        reward = ((advance - cross - delta_turn) * self.motion_reward_scaling) - self.time_penalty
         if reached:
-            reward += self.fail_penalty
-        elif outofbounds or tipped:
+            reward += self.pass_reward
+        elif tipped or outofbounds:
             reward -= self.fail_penalty
-        reward += (advance - cross) * 10
+        elif outoftime:
+            reward -= dist * self.motion_reward_scaling
         return self.state, reward, done, *_, i
