@@ -283,6 +283,8 @@ def learn_rl(
     constrained_actions=None, reset_num_timesteps=True, reuse_logger=False,
     policy_class=XformedPolicy,
     log_env_params: tuple=(),
+    callback :BaseCallback=None,
+    progress_bar: bool=True,
     **kwargs
 ):
     # process arguments
@@ -348,12 +350,14 @@ def learn_rl(
         # The transform function has already created & assigned values to the
         # *xform tensors in model.policy
         model.policy.load_state_dict(params, strict=False)
-    # print('HERE')
-    # print(model.policy.state_xform.device, next(model.policy.parameters()).device)
+    if callback is not None:
+        callbacks = [callback, HParamCallback(log_env_params)]
+    else:
+        callbacks = HParamCallback(log_env_params)
     model.learn(total_timesteps=steps, tb_log_name=logname,
-                callback=HParamCallback(log_env_params),
+                callback=callbacks,
                 reset_num_timesteps=reset_num_timesteps,
-                progress_bar=True)
+                progress_bar=progress_bar)
     return model
 
 
@@ -433,7 +437,6 @@ def evaluate_rl(agent: PPO, env: gym.Env, n_eval_episodes=50):
 
 def save_agent(agent: PPO, dest):
     agent.save(dest)
-
 
 
 
