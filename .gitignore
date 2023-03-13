@@ -1,4 +1,6 @@
 .ipynb_checkpoints/
 *.pyc
 src/tensorboard/
+src/studies/
 *.db
+*.pickle
