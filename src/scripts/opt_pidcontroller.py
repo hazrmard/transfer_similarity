@@ -7,7 +7,7 @@ import pickle
 
 import numpy as np
 import optuna
-from systems.multirotor import Multirotor, MultirotorTrajEnv, VP
+from systems.multirotor import Multirotor, MultirotorTrajEnv, MultirotorAllocEnv, DEFAULTS as DEFAULTS_UAV
 from multirotor.trajectories import Trajectory
 from multirotor.helpers import DataLog
 from multirotor.coords import direction_cosine_matrix, inertial_to_body
@@ -24,15 +24,17 @@ from .setup import local_path
 DEFAULTS = Namespace(
     ntrials = 1000,
     nprocs = 5,
-    bounding_box = 20.,
-    max_velocity = 3.,
-    max_acceleration = 2.5,
-    max_tilt = np.pi / 12,
+    bounding_box = DEFAULTS_UAV.bounding_box,
+    max_velocity = DEFAULTS_UAV.max_velocity,
+    max_acceleration = DEFAULTS_UAV.max_acceleration,
+    max_tilt = DEFAULTS_UAV.max_tilt,
     scurve = False,
     use_yaw = False,
     wind = '0@0',
+    fault = '0@0',
     num_sims = 10,
     study_name = 'MultirotorPIDController',
+    env_kind = 'traj',
 )
 
 def get_study(study_name: str=DEFAULTS.study_name, seed: int=0):
@@ -71,30 +73,32 @@ def run_sim(
 def get_controller(m: Multirotor, scurve=False, args: Namespace=DEFAULTS):
     assert m.simulation.dt <= 0.1, 'Simulation time step too large.'
     pos = PosController( # PD
-        0.8, 0., 3.75, args.max_velocity, vehicle=m,
+        0.8, 0., 3.75,
+        max_err_i=args.max_velocity, vehicle=m,
         max_velocity=args.max_velocity,
         max_acceleration=args.max_acceleration,
         square_root_scaling=False
     )
     vel = VelController( # P
-        1, 0., 0, args.max_acceleration,
+        1, 0., 0,
+        max_err_i=args.max_acceleration,
         vehicle=m,
         max_tilt=args.max_tilt)
     att = AttController( # P
         [1., 1., 0.], 0, 0., # yaw param is set to 0, in case use_yaw=False
-        1., vehicle=m)
+        max_err_i=1., vehicle=m)
     rat = RateController( # PD
         [4, 4, 0], 0, [40, 40, 0], # yaw param is set to 0, in case use_yaw=False
-        0.5,
+        max_err_i=0.5,
         vehicle=m)
 
     alt = AltController(
         1, 0, 0,
-        1, vehicle=m,
+        max_err_i=1, vehicle=m,
         max_velocity=args.max_velocity)
     alt_rate = AltRateController(
         10, 0, 0,
-        1, vehicle=m)
+        max_err_i=1, vehicle=m)
 
     ctrl = Controller(
         pos, vel, att, rat, alt, alt_rate,
@@ -169,11 +173,10 @@ def make_controller_from_trial(trial: optuna.Trial, args: Namespace=DEFAULTS, pr
 
 
 
-def make_env(env_params, args: Union[Namespace,Dict]=DEFAULTS):
-    if isinstance(args, dict):
-        args = Namespace(**args)
-    if args.wind != DEFAULTS.wind:
-        force, heading = args.wind.split('@')
+def make_disturbance_fn(heading) -> Callable[[Multirotor], np.ndarray]:
+    force_heading = heading.split('@')
+    if len(force_heading) == 2:
+        force, heading = force_heading
         force, heading = float(force), float(heading) * np.pi / 180
         wforce = force * np.asarray([-np.cos(heading), -np.sin(heading), 0])
         def wind_fn(m: Multirotor):
@@ -181,9 +184,39 @@ def make_env(env_params, args: Union[Namespace,Dict]=DEFAULTS):
             return inertial_to_body(wforce.astype(m.dtype), dcm)
     else:
         def wind_fn(m: Multirotor):
-            return 0.
-    env_params['disturbance_fn'] = wind_fn
-    env = MultirotorTrajEnv(**env_params)
+            return np.zeros(3, m.dtype)
+    return wind_fn
+
+
+
+def apply_fault(env: MultirotorTrajEnv, fault: str) -> MultirotorTrajEnv:
+    loss, fault = fault.split('@')
+    if fault == 'all' or fault == 'battery':
+        motors = range(len(env.vehicle.propellers))
+    else:
+        motors = [int(fault)]
+    loss = float(loss)
+    for motor in motors:
+        env.vehicle.params.propellers[motor].k_thrust *= (1 - loss)
+        env.vehicle.params.propellers[motor].k_drag *= (1 - loss)
+        # Since propeller class deepcopies params, need to change them too
+        env.vehicle.propellers[motor].params.k_thrust *= (1 - loss)
+        env.vehicle.propellers[motor].params.k_drag *= (1 - loss)
+    return env
+
+
+
+def make_env(env_params, args: Union[Namespace,Dict]=DEFAULTS):
+    if isinstance(args, dict):
+        args = Namespace(**args)
+    if args.wind != DEFAULTS.wind and 'disturbance_fn' not in env_params.keys():
+        env_params['disturbance_fn'] = make_disturbance_fn(args.wind)
+    if args.env_kind == 'traj':
+        env = MultirotorTrajEnv(**env_params)
+    elif args.env_kind == 'alloc':
+        env = MultirotorAllocEnv(**env_params)
+    if args.fault != DEFAULTS.fault:
+        apply_fault(env, args.fault)
     return env
 
 
@@ -205,7 +238,7 @@ def make_objective(args: Namespace=DEFAULTS):
             traj = Trajectory(env.vehicle, waypoints, proximity=0.1)
             log = run_sim(
                 env, traj,
-                lambda _: np.zeros(3, env.vehicle.dtype)
+                env.ctrl_fn
             )
             errs.append(log.reward.sum())
         return np.mean(errs)
@@ -260,16 +293,18 @@ if __name__=='__main__':
     parser.add_argument('--scurve', action='store_true', default=DEFAULTS.scurve)
     parser.add_argument('--use_yaw', action='store_true', default=DEFAULTS.use_yaw)
     parser.add_argument('--wind', help='wind force from heading "force@heading"', default=DEFAULTS.wind)
+    parser.add_argument('--fault', help='motor loss of effectiveness "loss@motor"', default=DEFAULTS.fault)
     parser.add_argument('--bounding_box', default=DEFAULTS.bounding_box, type=float)
     parser.add_argument('--num_sims', default=DEFAULTS.num_sims, type=int)
     parser.add_argument('--append', action='store_true', default=False)
     parser.add_argument('--pid_params', help='File to save pid params to.', type=str, default='')
     parser.add_argument('--comment', help='Comments to attach to studdy.', type=str, default='')
+    parser.add_argument('--env_kind', help='"[traj,alloc]"', default=DEFAULTS.env_kind)
     args = parser.parse_args()
 
     if not args.append:
         try:
-            os.remove(local_path / (args.study_name + '.db'))
+            os.remove(local_path / ('studies/' + args.study_name + '.db'))
         except OSError:
             pass
     
@@ -285,5 +320,5 @@ if __name__=='__main__':
     print(study.best_trial.number)
     print(study.best_params)
     if len(args.pid_params) > 0:
-        with open(args.pid_params + ('.pickle' if not args.pidname.endswith('pickle') else ''), 'wb') as f:
+        with open(args.pid_params + ('.pickle' if not args.pid_params.endswith('pickle') else ''), 'wb') as f:
             pickle.dump(apply_params(None, **study.best_params), f)

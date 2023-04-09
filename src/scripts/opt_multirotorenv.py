@@ -29,9 +29,11 @@ DEFAULTS = Namespace(
     scurve = PID_DEFAULTS.scurve,
     use_yaw = PID_DEFAULTS.use_yaw,
     wind = PID_DEFAULTS.wind,
+    fault = PID_DEFAULTS.fault,
     num_sims = 5,
     max_steps = 50_000,
     study_name = 'MultirotorTrajEnv',
+    env_kind = PID_DEFAULTS.env_kind,
     pid_params = ''
 )
 
@@ -91,13 +93,14 @@ def get_controller(m: Multirotor, trial: optuna.Trial, args: Namespace=DEFAULTS)
 def make_objective(args: Namespace=DEFAULTS):
     def objective(trial: optuna.Trial):
         env_kwargs = dict(
-            steps_u = trial.suggest_int('steps_u', 1, 50, step=5),
             bounding_box = args.bounding_box,
-            scaling_factor = trial.suggest_float('scaling_factor', 0.05, 1., step=0.05),
             seed=0,
             get_controller_fn=lambda m: get_controller(m, trial, args),
             vp = VP
         )
+        if args.env_kind=='traj':
+            env_kwargs['steps_u'] = trial.suggest_int('steps_u', 1, 50, step=5),
+            env_kwargs['scaling_factor'] = trial.suggest_float('scaling_factor', 0.05, 1., step=0.05),
         env = make_env(env_kwargs, args)
         ep_len = env.period // (env.dt * env.steps_u)
         ep_len = ep_len + (32 - (ep_len % 32)) # len as a multiple of 32
@@ -112,7 +115,7 @@ def make_objective(args: Namespace=DEFAULTS):
             n_epochs = n_epochs,
             batch_size = batch_size,
             seed=0,
-            log_env_params = ('steps_u', 'scaling_factor'),
+            log_env_params = ('steps_u', 'scaling_factor') if args.env_kind=='traj' else (),
             tensorboard_log = env.name + ('/optstudy/%s/%03d' % (args.study_name, trial.number)),
             policy_kwargs=dict(squash_output=False,
                                 net_arch=[dict(pi=[128,128], vf=[128,128])]),
@@ -138,7 +141,6 @@ def optimize(args: Namespace=DEFAULTS, seed: int=0):
 
 def apply_params(env: MultirotorTrajEnv, **params):
     prefix = 'pid-'
-    prefix_optional = True
     env_params = ('steps_u', 'scaling_factor')
     rl_params = ('learning_rate', 'n_epochs', 'n_steps', 'batch_size')
     env_dict = {k: params[k] for k in env_params}
@@ -148,9 +150,9 @@ def apply_params(env: MultirotorTrajEnv, **params):
     for k, v in params.items():
         if k in env_params or k in rl_params:
             continue
-        if k.startswith(prefix) and prefix_optional:
+        elif k.startswith(prefix):
             k = k[len(prefix):]
-        pid_dict[k] = v
+            pid_dict[k] = v
     apply_params_pid(env.ctrl, **pid_dict)
 
     env.scaling_factor = env_dict['scaling_factor']
@@ -169,12 +171,14 @@ if __name__=='__main__':
     parser.add_argument('--scurve', action='store_true', default=DEFAULTS.scurve)
     parser.add_argument('--use_yaw', action='store_true', default=DEFAULTS.use_yaw)
     parser.add_argument('--wind', help='wind force from heading "force@heading"', default=DEFAULTS.wind)
+    parser.add_argument('--fault', help='motor loss of effectiveness "loss@motor"', default=DEFAULTS.fault)
     parser.add_argument('--bounding_box', default=DEFAULTS.bounding_box, type=float)
     parser.add_argument('--num_sims', default=DEFAULTS.num_sims, type=int)
     parser.add_argument('--max_steps', default=DEFAULTS.max_steps, type=int)
     parser.add_argument('--append', action='store_true', default=False)
     parser.add_argument('--pid_params', help='File to load pid params from.', type=str, default=DEFAULTS.pid_params)
     parser.add_argument('--comment', help='Comments to attach to study.', type=str, default='')
+    parser.add_argument('--env_kind', help='"[traj,alloc]"', default=DEFAULTS.env_kind)
     args = parser.parse_args()
 
     if not args.append:
