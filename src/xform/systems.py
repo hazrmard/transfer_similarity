@@ -2,7 +2,7 @@
 Operations primarily on systems and environments.
 """
 
-from typing import Union, Tuple
+from typing import Union, Tuple, Callable
 from types import SimpleNamespace
 
 import numpy as np
@@ -78,14 +78,16 @@ def pseudo_matrix_from_data(
 
 
 def get_env_samples(
-    env: gym.Env, n, control_law=None, n_episodes_or_steps='episodes'
+    env: gym.Env, n, control_law=Union[np.ndarray, Callable, None], n_episodes_or_steps='episodes'
 ) -> Tuple[np.ndarray, np.ndarray]:
     if isinstance(control_law, np.ndarray):
         policy = lambda x: -control_law @ x
     elif control_law is None:
         policy = lambda x: env.action_space.sample()
-    else:
+    elif hasattr(control_law, 'predict'): # i.e. is ActorCriticPolicy from stable_baselines3
         policy = lambda x: control_law.predict(x, deterministic=True)[0]
+    elif callable(control_law):
+        policy = control_law
     xu, x = [], []
     i = 0
     while i < n:
@@ -121,36 +123,36 @@ def transform_linear_system(sys: control.LinearIOSystem, xformA, xformB) -> cont
 
 
 def get_transforms(
-    agent, env, env_,
+    agent, env_s, env_t,
     buffer_episodes=5,
     n_episodes_or_steps='episodes',
     xformA=None, xformB=None,
     data_driven_source=True,
     x0=None, u0=None,
-):
+) -> Tuple[np.ndarray, np.ndarray, SimpleNamespace]:
     # linearize a non-linear system to get A,B,C,D representation,
     # and the resulting pseudo matrix P_s of the source task
-    if hasattr(env, 'system'):
-        if isinstance(env.system, control.LinearIOSystem):
-            _sys_linear = env.system
-        elif isinstance(env.system, control.NonlinearIOSystem):
+    if hasattr(env_s, 'system') and not data_driven_source:
+        if isinstance(env_s.system, control.LinearIOSystem):
+            _sys_linear = env_s.system
+        elif isinstance(env_s.system, control.NonlinearIOSystem):
             if x0 is None:
-                x0 = env.observation_space.sample() * 0
+                x0 = env_s.observation_space.sample() * 0
             if u0 is None:
-                u0 = env.action_space.sample() * 0
-            _sys_linear = env.system.linearize(x0, u0)
+                u0 = env_s.action_space.sample() * 0
+            _sys_linear = env_s.system.linearize(x0, u0)
     else:
         # Learn environment model from data
         data_driven_source = True
     # get the pseudo matrix representing source system dynamics
     if data_driven_source:
-        P_s, err_s, *_ = pseudo_matrix_from_data(env, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
+        P_s, err_s, *_ = pseudo_matrix_from_data(env_s, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
     else:
-        P_s, err_s = pseudo_matrix(_sys_linear, env.dt), 0.
+        P_s, err_s, *_ = pseudo_matrix(_sys_linear, env_s.dt), 0.
     # get pseudo matrix representing target system dynamics
-    P_t, err_t, xu, x = pseudo_matrix_from_data(env_, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
+    P_t, err_t, xu, x = pseudo_matrix_from_data(env_t, buffer_episodes, agent, n_episodes_or_steps=n_episodes_or_steps)
     # get the relationship between source and target systems
-    A_s, B_s, A_t, B_t, F_A, F_B = ab_xform_from_pseudo_matrix(P_s, P_t, env.dt)
+    A_s, B_s, A_t, B_t, F_A, F_B = ab_xform_from_pseudo_matrix(P_s, P_t, env_s.dt)
     C_s, D_s = np.eye(len(A_s)), np.zeros_like(B_s)
     if xformA is not None:
         F_A = xformA
