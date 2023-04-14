@@ -34,7 +34,8 @@ DEFAULTS = Namespace(
     max_steps = 50_000,
     study_name = 'MultirotorTrajEnv',
     env_kind = PID_DEFAULTS.env_kind,
-    pid_params = ''
+    pid_params = '',
+    use_trial = None
 )
 
 class Callback(BaseCallback):
@@ -129,8 +130,10 @@ def make_objective(args: Namespace=DEFAULTS):
 
 
 
-def optimize(args: Namespace=DEFAULTS, seed: int=0):
+def optimize(args: Namespace=DEFAULTS, seed: int=0, queue=[]):
     study = get_study(args.study_name, seed=seed, args=args)
+    for params in queue:
+        study.enqueue_trial(params)
     study.optimize(
         make_objective(args),
         n_trials=args.ntrials//args.nprocs,
@@ -143,7 +146,7 @@ def apply_params(env: MultirotorTrajEnv, **params):
     prefix = 'pid-'
     env_params = ('steps_u', 'scaling_factor')
     rl_params = ('learning_rate', 'n_epochs', 'n_steps', 'batch_size')
-    env_dict = {k: params[k] for k in env_params}
+    env_dict = {k: params[k] for k in env_params if k in params}
     rl_dict = {k: params[k] for k in rl_params}
 
     pid_dict = {}
@@ -155,8 +158,8 @@ def apply_params(env: MultirotorTrajEnv, **params):
             pid_dict[k] = v
     apply_params_pid(env.ctrl, **pid_dict)
 
-    env.scaling_factor = env_dict['scaling_factor']
-    env.steps_u = env_dict['steps_u']
+    env.scaling_factor = env_dict.get('scaling_factor', env.scaling_factor)
+    env.steps_u = env_dict.get('steps_u', env.steps_u)
     return dict(rl=rl_dict, pid=pid_dict, env=env_dict)
 
 
@@ -179,6 +182,7 @@ if __name__=='__main__':
     parser.add_argument('--pid_params', help='File to load pid params from.', type=str, default=DEFAULTS.pid_params)
     parser.add_argument('--comment', help='Comments to attach to study.', type=str, default='')
     parser.add_argument('--env_kind', help='"[traj,alloc]"', default=DEFAULTS.env_kind)
+    parser.add_argument('--use_study', help='Use top 10 parameters from this trial to start', default=None)
     args = parser.parse_args()
 
     if not args.append:
@@ -193,10 +197,21 @@ if __name__=='__main__':
     # create study if it doesn't exist. The study will be reused with a new seed
     # by each process
     study = get_study(args.study_name, args=args)
+    # reuse parameters from another study
+    if args.use_study is not None:
+        trials = sorted(get_study(args.use_study).trials, key= lambda t: t.value, reverse=True)[:10]
+        params = [r.params for r in trials]
+        trials_per_proc = len(params) // args.nprocs
+        reuse = [params[i:i+trials_per_proc] for i in range(0, len(params), trials_per_proc)]
+        remainder = len(params) % trials_per_proc
+        if remainder > 0: # add remainder to last process's queue
+            reuse[-1].extend(params[-remainder:])
+    else:
+        reuse = [[] for _ in args.nprocs]
 
     for key in vars(args):
         study.set_user_attr(key, getattr(args, key))
 
     mp.set_start_method('spawn')
     with mp.Pool(args.nprocs) as pool:
-        pool.starmap(optimize, [(args, i) for i in range(args.nprocs)])
+        pool.starmap(optimize, [(args, i, reuse[i]) for i in range(args.nprocs)])
