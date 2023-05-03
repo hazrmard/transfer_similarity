@@ -78,7 +78,7 @@ def pseudo_matrix_from_data(
 
 
 def get_env_samples(
-    env: gym.Env, n, control_law=Union[np.ndarray, Callable, None], n_episodes_or_steps='episodes'
+    env: gym.Env, n, control_law: Union[np.ndarray, Callable, None]=None, n_episodes_or_steps='episodes'
 ) -> Tuple[np.ndarray, np.ndarray]:
     if isinstance(control_law, np.ndarray):
         policy = lambda x: -control_law @ x

@@ -24,6 +24,7 @@ def create_lunarlander(
     off_thresh = 0.5,
     side_power = 1.,
     main_power = 15,
+    use_torch: bool=False
   ):
     gravity = 10.
     inertia = (1/12) * mass * (width**2 + height**2)
@@ -64,8 +65,8 @@ def create_lunarlander(
 class LanderEnv(SystemEnv):
 
 
-    def __init__(self, *args, dt=0.1, seed=0, **kwargs):
-        system = create_lunarlander(**kwargs)
+    def __init__(self, *args, system=None, dt=0.1, seed=0, **kwargs):
+        system = create_lunarlander(**kwargs) if system is None else system
         # x, y, vx, vy, angle, angle rate, leg1 contact, leg2 contact
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(8,), dtype=np.float32, seed=seed)
         # main thrust, side thrust
@@ -86,7 +87,22 @@ class LanderEnv(SystemEnv):
         else:
             x = np.asarray(x, np.float32)
         self.x = x
-        return self.x
+        return self.state
+
+
+    @property
+    def state(self):
+        x = self.x
+        return np.asarray([
+            (x[0] - VIEWPORT_W / SCALE / 2) / (VIEWPORT_W / SCALE / 2),
+            (x[1] - (0 + LEG_DOWN / SCALE)) / (VIEWPORT_H / SCALE / 2),
+            x[2] * (VIEWPORT_W / SCALE / 2) * self.dt,
+            x[3] * (VIEWPORT_H / SCALE / 2) * self.dt,
+            x[4],
+            20.0 * x[5] * self.dt,
+            0.0,
+            0.0,
+        ], self.dtype)
 
 
     def reward(self, xold, u, x):
@@ -116,7 +132,7 @@ class LanderEnv(SystemEnv):
         elif self.n >= self.period:
             done = True
             r -= 100
-        return x, r, done, *_, i
+        return self.state, r, done, *_, i
 
 
 

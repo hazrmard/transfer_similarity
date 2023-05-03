@@ -115,7 +115,7 @@ class DynamicsModel(nn.Module):
     ) -> Tuple[np.ndarray, np.ndarray]:
         x = torch.as_tensor(x, dtype=torch.float32, device=self.device)
         u = torch.as_tensor(u, dtype=torch.float32, device=self.device)
-        xu = torch.cat((x,u), dim=-1)
+        xu = torch.cat((x,u), dim=-1) # N x [states + actions]
         with torch.set_grad_enabled(True):
             xu = torch.atleast_2d(xu)
             xu.requires_grad_(True)
@@ -126,5 +126,73 @@ class DynamicsModel(nn.Module):
             ddxu = jacobian(self.dxdt, xu)
             ddxu = torch.einsum("bibj->bij", ddxu)
             ddxu = ddxu.cpu().numpy()
-            ddx, ddu = ddxu[...,:self.n_states], ddxu[...,-self.n_actions:]
-            return ddx, ddu
+            # ddx, ddu = ddxu[...,:self.n_states], ddxu[...,-self.n_actions:]
+            # return ddx, ddu
+            return ddxu
+
+
+    def dynamics(self, t: float, x: np.ndarray, u: np.ndarray):
+        xu = np.atleast_2d(np.concatenate((x,u), dtype=np.float32))
+        xu = torch.from_numpy(xu).to(self.device)
+        dxdt = self.dxdt(xu).cpu().detach().numpy().squeeze()
+        return dxdt
+
+
+
+def transform_nonlinear_policy(model: DynamicsModel, model_: DynamicsModel, predict_fn):
+    if not model.separable:
+        def predict(x, verbose=False):
+            u = predict_fn(x)[0]
+            dxdt = model.dynamics(None, x, u).squeeze()
+            dxdt_ = model_.dynamics(None, x, u).squeeze()
+            diff = dxdt - dxdt_
+
+            # ddx, ddu = model_.ddxu(x, u)
+            # ddu = ddu.squeeze()
+            # ddu_inv = np.linalg.pinv(ddu)
+
+            ddxu = model_.ddxu(x, u).squeeze()
+        
+            ddxu_inv = np.linalg.pinv(ddxu)
+            # ddu_inv = ddxu_inv[-model.n_actions:,:]
+            u_ = (
+                np.clip((ddxu_inv @ diff)[-model_.n_actions:],a_min=-1,a_max=1) * 0.1
+                + u*0.9
+            ).squeeze()
+            if verbose:
+                print('diff  ', diff.shape)
+                print('ddxu  ', ddxu.shape)
+                print('ddxu-1', ddxu_inv.shape)
+                # print('ddu  ', ddu.shape)
+                # print('ddu-1', ddu_inv.shape)
+                print('dxdt ', dxdt)
+                print('dxdt_', dxdt_)
+                print('u ', u)
+                print('u_', u_)
+            return u_, None
+    else:
+        ddu = model_.B.cpu().detach().numpy()
+        ddxu_inv = np.linalg.pinv(ddu)
+        def predict(x, verbose=False):
+            u = predict_fn(x)[0]
+            dxdt = model.dynamics(None, x, u).squeeze()
+            dxdt_ = model_.dynamics(None, x, u).squeeze()
+            diff = dxdt - dxdt_
+        
+            # ddu_inv = ddxu_inv[-model.n_actions:,:]
+            u_ = (
+                np.clip((ddxu_inv @ diff)[-model_.n_actions:] + u,
+                        a_min=-1,a_max=1)
+            ).squeeze()
+            if verbose:
+                print('diff  ', diff.shape)
+                print('ddu  ', ddu.shape)
+                print('ddxu-1', ddxu_inv.shape)
+                # print('ddu  ', ddu.shape)
+                # print('ddu-1', ddu_inv.shape)
+                print('dxdt ', dxdt)
+                print('dxdt_', dxdt_)
+                print('u ', u)
+                print('u_', u_)
+            return u_, None
+    return predict

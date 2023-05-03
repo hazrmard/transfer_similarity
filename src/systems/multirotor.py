@@ -1,11 +1,15 @@
-from typing import Literal, Callable
+from typing import Literal, Callable, Type, Union, Iterable
 from argparse import Namespace
 
 from copy import deepcopy
 import numpy as np
+from stable_baselines3.ppo import PPO
 import control
 import gym
+from tqdm.autonotebook import tqdm
 from multirotor.simulation import Multirotor
+from multirotor.helpers import DataLog
+from multirotor.trajectories import Trajectory
 from multirotor.vehicle import BatteryParams, MotorParams, PropellerParams, VehicleParams, SimulationParams
 from multirotor.controller import (
     AltController, AltRateController,
@@ -21,6 +25,7 @@ DEFAULTS = Namespace(
     max_velocity = 3.,
     max_acceleration = 2.5,
     max_tilt = np.pi / 12,
+    max_rads = 700
 )
 
 
@@ -72,7 +77,9 @@ def get_controller(
     pos = PosController(
         1.0, 0., 0.,
         max_err_i=DEFAULTS.max_velocity, vehicle=m,
-        max_velocity=max_velocity, max_acceleration=max_acceleration    
+        max_velocity=max_velocity,
+        max_acceleration=max_acceleration  ,
+        square_root_scaling=False  
     )
     vel = VelController(
         2.0, 1.0, 0.5,
@@ -94,7 +101,7 @@ def get_controller(
         1, 0, 0,
         max_err_i=1, vehicle=m, max_velocity=max_velocity)
     alt_rate = AltRateController(
-        5, 0, 0,
+        10, 0, 0,
         max_err_i=1, vehicle=m)
     ctrl = Controller(
         pos, vel, att, rat, alt, alt_rate,
@@ -108,18 +115,20 @@ def create_multirotor(
     vp=VP, sp=SP, name='multirotor', xformA=np.eye(12), xformB=np.eye(4),
     return_mult_ctrl=False,
     kind: Literal['speeds', 'dynamics', 'waypoints']='dynamics',
-    max_rads: float=700,
+    max_rads: float=DEFAULTS.max_rads,
     get_controller_fn: Callable[[Multirotor], Controller]=get_controller,
-    disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda _: np.zeros(3, SP.dtype)
+    disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda _: np.zeros(3, SP.dtype),
+    multirotor_class: Type[Multirotor]=Multirotor,
+    multirotor_kwargs: dict={}
 ):
-    m = Multirotor(vp, sp)
+    m = multirotor_class(vp, sp, **multirotor_kwargs)
     ctrl = get_controller_fn(m)
 
     if kind=='dynamics':
         inputs=['fz','tx','ty','tz']
         def update_fn(t, x, u, params):
             speeds = m.allocate_control(u[0], u[1:4])
-            speeds = np.clip(speeds, a_min=-max_rads, a_max=max_rads)
+            speeds = np.clip(speeds, a_min=0, a_max=max_rads)
             dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds,
             disturb_forces=disturbance_fn(m))
             for prop, speed in zip(m.propellers, speeds):
@@ -128,12 +137,13 @@ def create_multirotor(
     elif kind=='speeds':
         inputs = [('w%02d' % n) for n in range(len(m.propellers))]
         def update_fn(t, x, u, params):
-            speeds = np.clip(u, a_min=0, a_max=max_rads)
-            m.step_speeds(speeds, disturb_forces=disturbance_fn(m))
-            # here, waypoint supervision can be added
-            old_dynamics = ctrl.action
-            new_dynamics = ctrl.step(np.zeros(4, m.dtype), ref_is_error=False)
-            return (new_dynamics - old_dynamics) / m.simulation.dt
+            # speeds = np.clip(u, a_min=0, a_max=max_rads)
+            # m.step_speeds(speeds, disturb_forces=disturbance_fn(m))
+            # # here, waypoint supervision can be added
+            # old_dynamics = ctrl.action
+            # new_dynamics = ctrl.step(np.zeros(4, m.dtype), ref_is_error=False)
+            # return (new_dynamics - old_dynamics) / m.simulation.dt
+            return None # integration of dynamics is done directly in MultirotorAllocEnv.step()
     elif kind=='waypoints':
         inputs=['x','y','z','yaw']
         def update_fn(t, x, u, params):
@@ -144,8 +154,8 @@ def create_multirotor(
                 disturb_forces=disturbance_fn(m))
             # for prop, speed in zip(m.propellers, speeds):
             #     prop.step(speed, max_voltage=m.battery.voltage)
-            dxdt[8] = 0. # no yaw change in lateral x/y motion problem
-            dxdt[11] = 0.
+            # dxdt[8] = 0. # no yaw change in lateral x/y motion problem
+            # dxdt[11] = 0.
             return dxdt
 
     sys = control.NonlinearIOSystem(
@@ -305,14 +315,17 @@ class MultirotorTrajEnv(SystemEnv):
         steps_u: int=1,
         # length of cube centered at origin within which position is initialized,
         # half length of cube centered at origin within which vehicle may move
-        bounding_box: float=DEFAULTS.bounding_box
+        bounding_box: float=DEFAULTS.bounding_box,
+        multirotor_class=Multirotor, multirotor_kwargs={}
     ):
         system, extra = create_multirotor(
             vp, sp, xformA=xformA, xformB=xformB,
             return_mult_ctrl=True,
             get_controller_fn=get_controller_fn,
             disturbance_fn=disturbance_fn,
-            kind='waypoints'
+            kind='waypoints',
+            multirotor_class=multirotor_class,
+            multirotor_kwargs=multirotor_kwargs
         )
         self.vehicle: Multirotor = extra['multirotor']
         self.ctrl: Controller = extra['ctrl']
@@ -452,20 +465,22 @@ class MultirotorAllocEnv(SystemEnv):
         # half length of cube centered at origin within which vehicle may move
         bounding_box: float=DEFAULTS.bounding_box
     ):
+        self.disturbance_fn = disturbance_fn
         system, extra = create_multirotor(
             vp, sp, xformA=xformA, xformB=xformB,
             return_mult_ctrl=True,
             get_controller_fn=get_controller_fn,
-            disturbance_fn=disturbance_fn,
+            disturbance_fn=self.disturbance_fn,
             kind='speeds'
         )
         self.vehicle: Multirotor = extra['multirotor']
         self.ctrl: Controller = extra['ctrl']
         super().__init__(system=system, q=q, r=r, dt=sp.dt, seed=seed, dtype=sp.dtype)
+
         self.observation_space = gym.spaces.Box(
             # prescribed dynamics
             low=-1, high=1,
-            shape=(4,), dtype=self.dtype
+            shape=(4+12,), dtype=self.dtype
         )
         self.action_space = gym.spaces.Box(
             # x,y,z
@@ -489,6 +504,7 @@ class MultirotorAllocEnv(SystemEnv):
         self.state_range = np.empty(self.observation_space.shape, self.dtype)
         self.action_range = np.empty(self.action_space.shape, self.dtype)
         self.x = np.zeros(self.observation_space.shape, self.dtype)
+        self.scaling_factor = scaling_factor
         self.steps_u = 1
 
         self.period = 20 # seconds
@@ -505,27 +521,31 @@ class MultirotorAllocEnv(SystemEnv):
 
     def normalize_state(self, state: np.ndarray):
         state = state * 2 / (self.state_range+1e-6)
-        state[0] -= 1
+        state[12] -= 1 # F_z
         return state
     def unnormalize_state(self, state: np.ndarray):
-        state[0] += 1
+        state = state.copy()
+        state[12] += 1 # F_z
         state *= self.state_range / 2
         return state
     def normalize_action(self, u: np.ndarray):
-        return (u - self.rads_n) / self.delta_rads
+        return (u) / self.delta_rads
     def unnormalize_action(self, u: np.ndarray):
-        return u * self.delta_rads + self.rads_n
+        return u * self.delta_rads
 
 
     def reset(self, uav_x=None, x=None):
         super().reset(x)
         self.ctrl.reset()
         self.vehicle.reset()
-        self.x *= 0.     # set prescribed dynamics to 0 thrust, 0 torques
         # Nominal range of state, not accounting for overshoot due to process dynamics
-        self.state_range[0] = 2 * self.vehicle.weight
-        self.state_range[1:3] = 2 * self.max_torque
-        self.action_range[:] = 2 * self.delta_rads
+        self.state_range[0:3] = 2 * self.bounding_box
+        self.state_range[3:6] = 2 * self.ctrl.ctrl_p.max_velocity
+        self.state_range[6:9] = 2 * self.ctrl.ctrl_v.max_tilt
+        self.state_range[9:12] = 2 * self.ctrl.ctrl_v.max_tilt * self.ctrl.ctrl_a.k_p
+        self.state_range[12] = 2 * self.vehicle.weight
+        self.state_range[13:16] = 2 * self.max_torque
+        self.action_range[:] = 2 * self.delta_rads * (1 + self.overshoot_factor)
         # Max overshoot allowed, which will cause episode to terminate
         self._max_pos = self.bounding_box * (1 + self.overshoot_factor) / 2
         self._max_angle = self.ctrl.ctrl_v.max_tilt * (1 + self.overshoot_factor)
@@ -542,6 +562,10 @@ class MultirotorAllocEnv(SystemEnv):
         self.uav_x = np.concatenate((pos, vel, ori, rat), dtype=self.dtype)
         # Manually set underlying vehicle's state
         self.vehicle.state = self.uav_x
+        self.x = np.concatenate((
+            self.uav_x,
+            self.ctrl.step(np.zeros(4, self.dtype), ref_is_error=False) # get initial prescribed dynamics from uav state,
+        ))
         # The desired direction of trajectory. Equal to straight line from initial
         # position to origin.
         self._des_unit_vec = (0 - pos) / (np.linalg.norm(pos) + 1e-6)
@@ -549,14 +573,38 @@ class MultirotorAllocEnv(SystemEnv):
 
 
     def step(self, u: np.ndarray, **kwargs):
-        u = np.clip(u, a_min=-1., a_max=1.)
-        u = self.unnormalize_action(u)
+        # u = np.clip(u, a_min=-1., a_max=1.)
+        u = self.unnormalize_action(u) * self.scaling_factor
+        speeds_nominal = self.vehicle.allocate_control(self.x[12], self.x[13:16])
+        speeds = np.clip(u + speeds_nominal, a_min=0, a_max=DEFAULTS.max_rads)
         oldpos = self.uav_x[:3]
         old_turn = np.abs(self.uav_x[8])
+        persist = kwargs.get('persist', True)
         for _ in range(self.steps_u):
-            x, r, d, *_, i = super().step(u)
-            self.vehicle.t = self.t
-            self.uav_x = self.vehicle.state
+            # we SystemEnv.step() takes integrates a dxdt() function. Instead,
+            # we directly get the next state
+            # x, r, d, *_, i = super().step(u)
+            # this part is replacing super().step(u):
+            # Here we are using step_speeds which calls odeint function.
+            # THis is different from SystemEnv.step(), used by TrajEnv, which uses trapezoid rule to integrate
+            # dxdt_speeds(). The difference in integration causes minor changes in dynamics between
+            # TrajEnv and AllocEnv
+            self.vehicle.step_speeds(speeds, disturb_forces=self.disturbance_fn(self.vehicle)) # TODO: persist
+            old_dynamics = self.x[12:16]
+            new_dynamics = self.ctrl.step(np.zeros(4, self.dtype), ref_is_error=False, persist=persist)
+            # print('D_old', old_dynamics, 'D_new', new_dynamics)
+            dxdt = 2 * (new_dynamics - old_dynamics) / self.dt - self.dxdt
+            i = dict(u=speeds, dxdt=dxdt)
+            if persist:
+                self.n += 1
+                self.t += self.dt
+                self.vehicle.t = self.t
+                self.vehicle.state[8] = 0 # Forcing yaw dynamics to be 0
+                self.vehicle.state[11] = 0
+                self.dxdt = dxdt # only for dynamics
+                self.uav_x = self.vehicle.state
+                self.x = np.concatenate((self.uav_x, new_dynamics))
+
             dist = np.linalg.norm(self.uav_x[:3])
             reached = dist <= self._proximity
             outofbounds = np.any(np.abs(self.uav_x[:3]) > self._max_pos)
@@ -581,10 +629,85 @@ class MultirotorAllocEnv(SystemEnv):
             reward -= self.fail_penalty
         elif outoftime:
             reward -= dist * self.motion_reward_scaling
-        return self.state, reward, done, *_, i
+        return self.state, reward, done, i
 
 
     def ctrl_fn(self, x: np.ndarray):
-        dynamics = self.unnormalize_state(x)
-        speeds = self.vehicle.allocate_control(dynamics[0], dynamics[1:4])
-        return self.normalize_action(speeds)
+        # dynamics = self.unnormalize_state(x)
+        # speeds = self.vehicle.allocate_control(dynamics[0], dynamics[1:4])
+        # return self.normalize_action(speeds)
+        return self.normalize_action(np.zeros(self.vehicle.params.nprops, self.dtype))
+
+
+
+def run_sim(
+    env: MultirotorTrajEnv, traj: Trajectory,
+    ctrl: Union[Controller, PPO, None],
+    max_steps=2_000, relative=None, verbose=False
+) -> DataLog:
+    if not isinstance(traj, Trajectory):
+        traj = Trajectory(env.vehicle, traj, proximity=env._proximity, resolution=env.bounding_box/2)
+    log = DataLog(env.vehicle, ctrl if isinstance(ctrl, Controller) else env.ctrl,
+                  other_vars=('reward', 'speeds'))
+    if isinstance(ctrl, PPO):
+        pidctrl = env.ctrl
+        predict_fn = lambda x: ctrl.predict(x, deterministic=True)[0]
+    elif ctrl is None or isinstance(ctrl, Controller):
+        ctrl = pidctrl = env.ctrl
+        predict_fn = lambda x: env.normalize_action(np.zeros(env.action_space.shape, env.vehicle.dtype))
+    
+    if verbose:
+        iterator = tqdm(enumerate(traj), leave=False, total=max_steps // env.steps_u)
+    else:
+        iterator = enumerate(traj)
+    for i, (pos, feed_forward_vel) in iterator:
+        # Get prescribed normalized action for system as thrust and torques
+        action = predict_fn(env.state)
+        # Send speeds to environment
+        state, r, done, *_, i = env.step(action)
+        log.log(reward=r, speeds=env.vehicle.speeds)
+        if done:
+            if verbose:
+                print(i)
+            break
+
+    log.done_logging()
+    return log
+
+
+
+def run_trajectory(
+    env: MultirotorTrajEnv, traj: Union[Trajectory, Iterable], ctrl=None, verbose=False, reset_zero=True, log=None
+) -> DataLog:
+    if reset_zero:
+        env.reset(uav_x=np.zeros(12)) # resets controller too
+    if log is None:
+        old_wp = np.zeros(3)
+        pos_global = env.vehicle.position
+    else:
+        old_wp = log.target.position[-1]
+        pos_global = log.position[-1]
+        env.vehicle.x = log.states[-1]
+        env.x = env.vehicle.x
+    if not isinstance(traj, Trajectory):
+        traj = Trajectory(env.vehicle, traj, proximity=2, resolution=env.bounding_box/2)
+    params = traj.get_params()
+    points = traj.generate_trajectory(curr_pos=pos_global)[1:]
+    for wp in points:
+        wp_rel = wp - old_wp
+        pos = env.vehicle.position - wp_rel
+        state = np.concatenate((pos, env.vehicle.state[3:]))
+        env.reset(state)
+        t = Trajectory(env.vehicle, [[0,0,0]], **params)
+        l = run_sim(env, t, env.ctrl if ctrl is None else ctrl, verbose=verbose)
+        if len(l):
+            l.position[:] += old_wp + wp_rel
+            l.target.position[:, :3] += old_wp + wp_rel
+        else:
+            continue
+        if log is None:
+            log = l
+        else:
+            log.append(l, relative=True)
+        old_wp = wp
+    return log

@@ -33,8 +33,10 @@ def plot_env_response(
         policy= lambda x: env.action_space.sample()
     elif control_law == 0:
         policy= lambda x: env.action_space.sample() * 0
-    else:
+    elif callable(getattr(control_law, 'predict', None)):
         policy = lambda x: control_law.predict(x, deterministic=True)[0]
+    elif callable(control_law):
+        policy = lambda x: control_law(x)[0]
     i = 0
     while not done and i < max_steps:
         i += 1

@@ -14,12 +14,14 @@ import numpy as np
 import control
 import gym
 
-from .base import SystemEnv
+from .base import SystemEnv, functions
 
 
 
 def create_cartpole(mc, mp, l, g, df=0.01, name='cartpole',
-                   xformA=np.eye(4), xformB=np.eye(4)):
+                   xformA=np.eye(4), xformB=np.eye(4), use_torch: bool=False):
+    np = functions(use_torch=use_torch)
+    xformA, xformB = np.asarray(xformA, dtype=np.float32), np.asarray(xformB, dtype=np.float32)
     g_l = g / l
     ml2_inv = 1 / (mp * l**2)
     def updfcn(t, x, u, params):
@@ -32,19 +34,20 @@ def create_cartpole(mc, mp, l, g, df=0.01, name='cartpole',
         cx1, sx1 = np.cos(x1), np.sin(x1)
         x4_denom = mc + mp - mp * cx1**2
         # delta x due to state
-        x1_ = x2
-        x2_ = (g_l * sx1) - (df * ml2_inv * x2) + \
+        dx_x = np.zeros(4, dtype=np.float32)
+        dx_x[0] = x1_ = x2
+        dx_x[1] = x2_ = (g_l * sx1) - (df * ml2_inv * x2) + \
               ((cx1 / l) * ((mp * sx1 * (g*cx1 - l * x2**2)) / x4_denom))
-        x3_ = x4
-        x4_ = (mp * sx1 * (g*cx1 - l * x2**2)) / x4_denom
-        dx_x = np.asarray([x1_, x2_, x3_, x4_], dtype=np.float32)
+        dx_x[2] = x3_ = x4
+        dx_x[3] = x4_ = (mp * sx1 * (g*cx1 - l * x2**2)) / x4_denom
         # delta x due to action. Factoring out parts in u
-        x1_ = 0
-        x2_ = (cx1 / l) * (u[0]) / x4_denom
-        x3_ = 0
-        x4_ = u[0] / x4_denom
-        dx_u = np.asarray([x1_, x2_, x3_, x4_], dtype=np.float32)
-        return xformA @ dx_x + xformB @ dx_u
+        dx_u = np.zeros(4, dtype=np.float32)
+        dx_u[0] = x1_ = 0
+        dx_u[1]= x2_ = (cx1 / l) * (u[0]) / x4_denom
+        dx_u[2]= x3_ = 0
+        dx_u[3]= x4_ = u[0] / x4_denom
+        # dx_u = np.asarray([x1_, x2_, x3_, x4_], dtype=np.float32)
+        return (xformA @ dx_x + xformB @ dx_u).squeeze()
     def outfcn(t, x, u, params):
         return x
     sys = control.NonlinearIOSystem(updfcn, outfcn, name=name,
