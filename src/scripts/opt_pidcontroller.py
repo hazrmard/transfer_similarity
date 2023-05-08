@@ -2,16 +2,16 @@ import os
 import multiprocessing as mp
 from argparse import ArgumentParser, Namespace
 from typing import Callable, Dict, Union
-from pprint import pprint as print
-import pickle
-
+from pprint import pprint
 import numpy as np
 import optuna
-from systems.multirotor import Multirotor, MultirotorTrajEnv, MultirotorAllocEnv, DEFAULTS as DEFAULTS_UAV
-from multirotor.trajectories import Trajectory, eight_curve
-from multirotor.helpers import DataLog
-from multirotor.coords import direction_cosine_matrix, inertial_to_body
-from multirotor.controller import (
+from systems.multirotor.multirotor import Multirotor
+from systems.multirotor.envs.multirotor_traj_env import MultirotorTrajEnv
+from systems.multirotor.envs.multirotor_alloc_env import MultirotorAllocEnv
+from systems.multirotor.trajectories import Trajectory, eight_curve
+from systems.multirotor.helpers.datalog import DataLog
+from systems.multirotor.math_utils import inertial_to_body
+from systems.multirotor.controllers import (
     AltController, AltRateController,
     PosController, AttController,
     VelController, RateController,
@@ -22,21 +22,21 @@ from multirotor.controller import (
 from .setup import local_path
 
 DEFAULTS = Namespace(
-    ntrials = 1000,
-    nprocs = 5,
-    bounding_box = DEFAULTS_UAV.bounding_box,
-    max_velocity = DEFAULTS_UAV.max_velocity,
-    max_acceleration = DEFAULTS_UAV.max_acceleration,
-    max_tilt = DEFAULTS_UAV.max_tilt,
-    scurve = False,
-    leashing = False,
-    sqrt_scaling = False,
-    use_yaw = False,
-    wind = '0@0',
-    fault = '0@0',
-    num_sims = 10,
-    study_name = 'MultirotorPIDController',
-    env_kind = 'traj',
+    ntrials=1000,
+    nprocs=5,
+    bounding_box=Multirotor.DEFAULTS.bounding_box,
+    max_velocity=Multirotor.DEFAULTS.max_velocity,
+    max_acceleration=Multirotor.DEFAULTS.max_acceleration,
+    max_tilt=Multirotor.DEFAULTS.max_tilt,
+    scurve=False,
+    leashing=False,
+    sqrt_scaling=False,
+    use_yaw=False,
+    wind='0@0',
+    fault='0@0',
+    num_sims=10,
+    study_name='MultirotorPIDController',
+    env_kind='traj',
 )
 
 def get_study(study_name: str=DEFAULTS.study_name, seed: int=0):
