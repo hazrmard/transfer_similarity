@@ -8,7 +8,7 @@ import pickle
 import numpy as np
 import optuna
 from systems.multirotor import Multirotor, MultirotorTrajEnv, MultirotorAllocEnv, DEFAULTS as DEFAULTS_UAV
-from multirotor.trajectories import Trajectory
+from multirotor.trajectories import Trajectory, eight_curve
 from multirotor.helpers import DataLog
 from multirotor.coords import direction_cosine_matrix, inertial_to_body
 from multirotor.controller import (
@@ -29,6 +29,8 @@ DEFAULTS = Namespace(
     max_acceleration = DEFAULTS_UAV.max_acceleration,
     max_tilt = DEFAULTS_UAV.max_tilt,
     scurve = False,
+    leashing = False,
+    sqrt_scaling = False,
     use_yaw = False,
     wind = '0@0',
     fault = '0@0',
@@ -77,7 +79,8 @@ def get_controller(m: Multirotor, scurve=False, args: Namespace=DEFAULTS):
         max_err_i=args.max_velocity, vehicle=m,
         max_velocity=args.max_velocity,
         max_acceleration=args.max_acceleration,
-        square_root_scaling=False
+        square_root_scaling=args.sqrt_scaling,
+        leashing=args.leashing
     )
     vel = VelController( # P
         1, 0., 0,
@@ -173,15 +176,17 @@ def make_controller_from_trial(trial: optuna.Trial, args: Namespace=DEFAULTS, pr
 
 
 
-def make_disturbance_fn(heading) -> Callable[[Multirotor], np.ndarray]:
+def make_disturbance_fn(heading, time=0.) -> Callable[[Multirotor], np.ndarray]:
     force_heading = heading.split('@')
     if len(force_heading) == 2:
         force, heading = force_heading
         force, heading = float(force), float(heading) * np.pi / 180
         wforce = force * np.asarray([-np.cos(heading), -np.sin(heading), 0])
         def wind_fn(m: Multirotor):
-            dcm = direction_cosine_matrix(*m.orientation).astype(m.dtype)
-            return inertial_to_body(wforce.astype(m.dtype), dcm)
+            if m.t >= time:
+                dcm = direction_cosine_matrix(*m.orientation).astype(m.dtype)
+                return inertial_to_body(wforce.astype(m.dtype), dcm)
+            return np.zeros(3, m.dtype)
     else:
         def wind_fn(m: Multirotor):
             return np.zeros(3, m.dtype)
@@ -189,19 +194,22 @@ def make_disturbance_fn(heading) -> Callable[[Multirotor], np.ndarray]:
 
 
 
-def apply_fault(env: MultirotorTrajEnv, fault: str) -> MultirotorTrajEnv:
+def apply_fault(
+    env: Union[Multirotor,MultirotorAllocEnv,MultirotorTrajEnv], fault: str
+) -> MultirotorTrajEnv:
+    vehicle = getattr(env, 'vehicle', env)
     loss, fault = fault.split('@')
     if fault == 'all' or fault == 'battery':
-        motors = range(len(env.vehicle.propellers))
+        motors = range(len(vehicle.propellers))
     else:
         motors = [int(fault)]
     loss = float(loss)
     for motor in motors:
-        env.vehicle.params.propellers[motor].k_thrust *= (1 - loss)
-        env.vehicle.params.propellers[motor].k_drag *= (1 - loss)
+        vehicle.params.propellers[motor].k_thrust *= (1 - loss)
+        vehicle.params.propellers[motor].k_drag *= (1 - loss)
         # Since propeller class deepcopies params, need to change them too
-        env.vehicle.propellers[motor].params.k_thrust *= (1 - loss)
-        env.vehicle.propellers[motor].params.k_drag *= (1 - loss)
+        vehicle.propellers[motor].params.k_thrust *= (1 - loss)
+        vehicle.propellers[motor].params.k_drag *= (1 - loss)
     return env
 
 
@@ -291,6 +299,8 @@ if __name__=='__main__':
     parser.add_argument('--max_acceleration', default=DEFAULTS.max_acceleration, type=float)
     parser.add_argument('--max_tilt', default=DEFAULTS.max_tilt, type=float)
     parser.add_argument('--scurve', action='store_true', default=DEFAULTS.scurve)
+    parser.add_argument('--leashing', action='store_true', default=DEFAULTS.leashing)
+    parser.add_argument('--sqrt_scaling', action='store_true', default=DEFAULTS.sqrt_scaling)
     parser.add_argument('--use_yaw', action='store_true', default=DEFAULTS.use_yaw)
     parser.add_argument('--wind', help='wind force from heading "force@heading"', default=DEFAULTS.wind)
     parser.add_argument('--fault', help='motor loss of effectiveness "loss@motor"', default=DEFAULTS.fault)

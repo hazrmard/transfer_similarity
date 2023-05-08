@@ -27,6 +27,8 @@ DEFAULTS = Namespace(
     max_acceleration = PID_DEFAULTS.max_acceleration,
     max_tilt = PID_DEFAULTS.max_tilt,
     scurve = PID_DEFAULTS.scurve,
+    leashing = False,
+    sqrt_scaling = False,
     use_yaw = PID_DEFAULTS.use_yaw,
     wind = PID_DEFAULTS.wind,
     fault = PID_DEFAULTS.fault,
@@ -59,7 +61,7 @@ class Callback(BaseCallback):
 
 
 
-def get_study(study_name: str=DEFAULTS.study_name, seed:int=0, args: Namespace=DEFAULTS):
+def get_study(study_name: str=DEFAULTS.study_name, seed:int=0, args: Namespace=DEFAULTS) -> optuna.Study:
     storage_name = "sqlite:///studies/{}.db".format(study_name)
     study = optuna.create_study(
         study_name=study_name, direction='maximize',
@@ -100,8 +102,8 @@ def make_objective(args: Namespace=DEFAULTS):
             vp = VP
         )
         if args.env_kind=='traj':
-            env_kwargs['steps_u'] = trial.suggest_int('steps_u', 1, 50, step=5),
-            env_kwargs['scaling_factor'] = trial.suggest_float('scaling_factor', 0.05, 1., step=0.05),
+            env_kwargs['steps_u'] = trial.suggest_int('steps_u', 1, 50, step=5)
+            env_kwargs['scaling_factor'] = trial.suggest_float('scaling_factor', 0.05, 1., step=0.05)
         env = make_env(env_kwargs, args)
         ep_len = env.period // (env.dt * env.steps_u)
         ep_len = ep_len + (32 - (ep_len % 32)) # len as a multiple of 32
@@ -133,7 +135,7 @@ def make_objective(args: Namespace=DEFAULTS):
 def optimize(args: Namespace=DEFAULTS, seed: int=0, queue=[]):
     study = get_study(args.study_name, seed=seed, args=args)
     for params in queue:
-        study.enqueue_trial(params)
+        study.enqueue_trial(params, skip_if_exists=True)
     study.optimize(
         make_objective(args),
         n_trials=args.ntrials//args.nprocs,
@@ -172,6 +174,8 @@ if __name__=='__main__':
     parser.add_argument('--max_acceleration', default=DEFAULTS.max_acceleration, type=float)
     parser.add_argument('--max_tilt', default=DEFAULTS.max_tilt, type=float)
     parser.add_argument('--scurve', action='store_true', default=DEFAULTS.scurve)
+    parser.add_argument('--leashing', action='store_true', default=DEFAULTS.leashing)
+    parser.add_argument('--sqrt_scaling', action='store_true', default=DEFAULTS.sqrt_scaling)
     parser.add_argument('--use_yaw', action='store_true', default=DEFAULTS.use_yaw)
     parser.add_argument('--wind', help='wind force from heading "force@heading"', default=DEFAULTS.wind)
     parser.add_argument('--fault', help='motor loss of effectiveness "loss@motor"', default=DEFAULTS.fault)
@@ -206,8 +210,11 @@ if __name__=='__main__':
         remainder = len(params) % trials_per_proc
         if remainder > 0: # add remainder to last process's queue
             reuse[-1].extend(params[-remainder:])
+        # for p in params:
+        #     study.enqueue_trial(p)
+        # reuse = [[] for _ in range(args.nprocs)]
     else:
-        reuse = [[] for _ in args.nprocs]
+        reuse = [[] for _ in range(args.nprocs)]
 
     for key in vars(args):
         study.set_user_attr(key, getattr(args, key))
