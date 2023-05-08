@@ -11,15 +11,16 @@ dependencies:
   - jupyterthemes
   - tqdm
   - scikit-learn
-  - pytorch::pytorch=1.12
-  - cudatoolkit=10.2
+  - pytorch=1.9.0
+  - torchvision=0.10.0
+  - cudatoolkit=11.1
   - control
   - slycot
   - numba
   - optuna
   - pip
   - pip:
-    - gym[box2d]==0.21 # breaking changes in API for later versions (for StableBaselines)
+    - gym[box2d]==0.17.2 # latest stable version of gym[box2d]
     - tensorboard
     - tensorboardX
     - -e src/vendor/multirotor
@@ -28,5 +29,5 @@ dependencies:
     - -e src/vendor/mpc.pytorch
     - -e src/vendor/garage
     - imitation
-    - tbparse==0.0.7
-    - optuna-dashboard==0.8.1
+    - tbparse==0.3.1 # latest stable version of tbparse
+    - optuna-dashboard==0.8.2 # latest stable version of optuna-dashboard
