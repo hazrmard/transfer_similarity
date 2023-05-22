@@ -27,6 +27,7 @@ dependencies:
     - -e src/vendor/stable-baselines3
     - -e src/vendor/mpc.pytorch
     - -e src/vendor/garage
-    - imitation
     - tbparse==0.0.7
     - optuna-dashboard==0.8.1
+    - filterpy==1.4
+
