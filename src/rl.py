@@ -286,7 +286,7 @@ def learn_rl(
     callback :BaseCallback=None,
     progress_bar: bool=True,
     **kwargs
-):
+) -> PPO:
     # process arguments
     kwargs['n_steps'] = kwargs.get('n_steps', getattr(env, 'period', 2048))
     kwargs['policy_kwargs'] = kwargs.get('policy_kwargs', {})

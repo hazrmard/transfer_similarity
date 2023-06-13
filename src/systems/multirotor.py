@@ -126,13 +126,13 @@ def create_multirotor(
 
     if kind=='dynamics':
         inputs=['fz','tx','ty','tz']
+        # NOTE: This is not a pure function due to setting m.speeds
         def update_fn(t, x, u, params):
             speeds = m.allocate_control(u[0], u[1:4])
             speeds = np.clip(speeds, a_min=0, a_max=max_rads)
             dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds,
             disturb_forces=disturbance_fn(m))
-            for prop, speed in zip(m.propellers, speeds):
-                prop.step(speed, max_voltage=m.battery.voltage)
+            m.speeds = speeds
             return dxdt
     elif kind=='speeds':
         inputs = [('w%02d' % n) for n in range(len(m.propellers))]
@@ -144,6 +144,7 @@ def create_multirotor(
             # new_dynamics = ctrl.step(np.zeros(4, m.dtype), ref_is_error=False)
             # return (new_dynamics - old_dynamics) / m.simulation.dt
             return None # integration of dynamics is done directly in MultirotorAllocEnv.step()
+    # NOTE: This is not a pure function due to setting m.speeds
     elif kind=='waypoints':
         inputs=['x','y','z','yaw']
         def update_fn(t, x, u, params):
@@ -152,8 +153,7 @@ def create_multirotor(
             speeds = np.clip(speeds, a_min=0, a_max=max_rads)
             dxdt = m.dxdt_speeds(t, x.astype(m.dtype), speeds,
                 disturb_forces=disturbance_fn(m))
-            # for prop, speed in zip(m.propellers, speeds):
-            #     prop.step(speed, max_voltage=m.battery.voltage)
+            m.speeds = speeds
             # dxdt[8] = 0. # no yaw change in lateral x/y motion problem
             # dxdt[11] = 0.
             return dxdt
@@ -313,6 +313,7 @@ class MultirotorTrajEnv(SystemEnv):
         disturbance_fn: Callable[[Multirotor], np.ndarray]=lambda m: np.zeros(3, np.float32),
         scaling_factor: float=1.,
         steps_u: int=1,
+        max_rads: float=DEFAULTS.max_rads,
         # length of cube centered at origin within which position is initialized,
         # half length of cube centered at origin within which vehicle may move
         bounding_box: float=DEFAULTS.bounding_box,
@@ -324,6 +325,7 @@ class MultirotorTrajEnv(SystemEnv):
             get_controller_fn=get_controller_fn,
             disturbance_fn=disturbance_fn,
             kind='waypoints',
+            max_rads=max_rads,
             multirotor_class=multirotor_class,
             multirotor_kwargs=multirotor_kwargs
         )
@@ -339,6 +341,7 @@ class MultirotorTrajEnv(SystemEnv):
             # x,y,z
             low=-1, high=1, shape=(3,), dtype=self.dtype
         )
+        self.max_rads = max_rads
         self.scaling_factor = scaling_factor
         self.bounding_box = bounding_box
         self.overshoot_factor = 0.5
