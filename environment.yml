@@ -30,4 +30,5 @@ dependencies:
     - tbparse==0.0.7
     - optuna-dashboard==0.8.1
     - filterpy==1.4
+    - dtw-python==1.3
 

@@ -7,7 +7,7 @@ import pickle
 
 import numpy as np
 import optuna
-from systems.multirotor import Multirotor, MultirotorTrajEnv, MultirotorAllocEnv, DEFAULTS as DEFAULTS_UAV
+from systems.multirotor import Multirotor, MultirotorTrajEnv, DEFAULTS as DEFAULTS_UAV
 from multirotor.trajectories import Trajectory, eight_curve
 from multirotor.helpers import DataLog
 from multirotor.coords import direction_cosine_matrix, inertial_to_body
@@ -29,8 +29,8 @@ DEFAULTS = Namespace(
     max_acceleration = DEFAULTS_UAV.max_acceleration,
     max_tilt = DEFAULTS_UAV.max_tilt,
     scurve = False,
-    leashing = False,
-    sqrt_scaling = False,
+    leashing = True,
+    sqrt_scaling = True,
     use_yaw = False,
     wind = '0@0',
     fault = '0@0',
@@ -180,13 +180,25 @@ def make_disturbance_fn(heading, time=0.) -> Callable[[Multirotor], np.ndarray]:
     force_heading = heading.split('@')
     if len(force_heading) == 2:
         force, heading = force_heading
-        force, heading = float(force), float(heading) * np.pi / 180
-        wforce = force * np.asarray([-np.cos(heading), -np.sin(heading), 0])
-        def wind_fn(m: Multirotor):
-            if m.t >= time:
-                dcm = direction_cosine_matrix(*m.orientation).astype(m.dtype)
-                return inertial_to_body(wforce.astype(m.dtype), dcm)
-            return np.zeros(3, m.dtype)
+        force = float(force)
+        try:
+            force, heading = float(force), float(heading) * np.pi / 180
+            wforce = force * np.asarray([-np.cos(heading), -np.sin(heading), 0])
+            def wind_fn(m: Multirotor):
+                if m.t >= time:
+                    dcm = direction_cosine_matrix(*m.orientation).astype(m.dtype)
+                    return inertial_to_body(wforce.astype(m.dtype), dcm)
+                return np.zeros(3, m.dtype)
+        except ValueError: # i.e. heading is not a number, random heading
+            def wind_fn(m: Multirotor):
+                if m.t == 0:
+                    setattr(m, '_heading', np.random.choice([0, np.pi/2, np.pi, 3*np.pi/2]))
+                    wforce = force * np.asarray([-np.cos(m._heading), -np.sin(m._heading), 0])
+                    setattr(m, '_wforce', wforce)
+                if m.t >= time:
+                    dcm = direction_cosine_matrix(*m.orientation).astype(m.dtype)
+                    return inertial_to_body(m._wforce.astype(m.dtype), dcm)
+                return np.zeros(3, m.dtype)
     else:
         def wind_fn(m: Multirotor):
             return np.zeros(3, m.dtype)
@@ -195,7 +207,7 @@ def make_disturbance_fn(heading, time=0.) -> Callable[[Multirotor], np.ndarray]:
 
 
 def apply_fault(
-    env: Union[Multirotor,MultirotorAllocEnv,MultirotorTrajEnv], fault: str
+    env: Union[Multirotor, MultirotorTrajEnv], fault: str
 ) -> MultirotorTrajEnv:
     vehicle = getattr(env, 'vehicle', env)
     loss, fault = fault.split('@')
@@ -221,8 +233,6 @@ def make_env(env_params, args: Union[Namespace,Dict]=DEFAULTS):
         env_params['disturbance_fn'] = make_disturbance_fn(args.wind)
     if args.env_kind == 'traj':
         env = MultirotorTrajEnv(**env_params)
-    elif args.env_kind == 'alloc':
-        env = MultirotorAllocEnv(**env_params)
     if args.fault != DEFAULTS.fault:
         apply_fault(env, args.fault)
     return env

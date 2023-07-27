@@ -61,12 +61,13 @@ class SystemEnv(gym.Env):
         return -(x.T @ self.q @ x + u.T @ self.r @ u).item()
 
 
-    def step(self, u: np.ndarray, from_x: np.ndarray=None, persist=True):
+    def step(self, u: np.ndarray, from_x: np.ndarray=None, persist=True, dt=None):
         u = np.asarray(u, dtype=self.dtype)
         old_dxdt = self.dxdt
         old_x = np.asarray(self.x if from_x is None else from_x, dtype=self.dtype)
         new_dxdt = np.asarray(self.dynamics(self.t, old_x, u), dtype=self.dtype)
-        new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * self.dt).astype(self.dtype)
+        dt = self.dt if dt is None else dt
+        new_x = (old_x + 0.5 * (old_dxdt + new_dxdt) * dt).astype(self.dtype)
         r = 0.
         if not self.custom_reward:
             r = self.reward(old_x, u, new_x)

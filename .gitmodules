@@ -16,3 +16,6 @@
 [submodule "src/vendor/garage"]
 	path = src/vendor/garage
 	url = https://github.com/rlworkgroup/garage
+[submodule "src/vendor/filters_book"]
+	path = src/vendor/filters_book
+	url = git@github.com:rlabbe/Kalman-and-Bayesian-Filters-in-Python.git
